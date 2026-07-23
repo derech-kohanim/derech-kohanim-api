@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "lib": ["ES2022"],
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "strictPropertyInitialization": false,
+    "noImplicitAny": true,
+    "sourceMap": true,
+    "declaration": false,
+    "incremental": true,
+    "outDir": "dist",
+    "baseUrl": ".",
+    "paths": {
+      "@shared": ["../derech-kohanim-shared/src/index.ts"],
+      "@shared/*": ["../derech-kohanim-shared/src/*"]
+    }
+  },
+  "include": ["src/**/*", "scripts/**/*", "../derech-kohanim-shared/src/**/*"],
+  "exclude": ["node_modules", "dist"]
+}

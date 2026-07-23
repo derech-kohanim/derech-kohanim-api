@@ -1,0 +1,70 @@
+# Local development: `docker compose up db` brings up Postgres with PostGIS and nothing
+# else, so the api itself runs from `npm run dev` with watch mode and instant feedback.
+#
+# The full stack (api in a container) is behind a profile, for later:
+#   docker compose --profile full up --build
+
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    ports:
+      - '${DB_PORT:-5432}:5432'
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-derech}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-derech}
+      POSTGRES_DB: ${POSTGRES_DB:-derech_kohanim}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-derech} -d ${POSTGRES_DB:-derech_kohanim}']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    profiles: ['full']
+    build:
+      # The shared contract lives in a sibling repository, so the build context is the
+      # project root that contains both.
+      context: ..
+      dockerfile: derech-kohanim-api/Dockerfile
+    ports:
+      - '${PORT:-3000}:3000'
+    environment:
+      PORT: 3000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-derech}:${POSTGRES_PASSWORD:-derech}@db:5432/${POSTGRES_DB:-derech_kohanim}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-insecure-secret-change-me}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      AUTH_DEV_LOGIN_ENABLED: ${AUTH_DEV_LOGIN_ENABLED:-false}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      HERE_API_KEY: ${HERE_API_KEY:-}
+      GOOGLE_ROUTES_API_KEY: ${GOOGLE_ROUTES_API_KEY:-}
+      GOOGLE_GEOCODING_API_KEY: ${GOOGLE_GEOCODING_API_KEY:-}
+      GEOCODING_REGION: ${GEOCODING_REGION:-il}
+      GRAPHHOPPER_API_KEY: ${GRAPHHOPPER_API_KEY:-}
+      GRAPHHOPPER_URL: ${GRAPHHOPPER_URL:-https://graphhopper.com/api/1/route}
+      GRAPHHOPPER_SELF_HOSTED: ${GRAPHHOPPER_SELF_HOSTED:-false}
+      HYBRID_SHAPE_ENGINE: ${HYBRID_SHAPE_ENGINE:-graphhopper}
+      ROUTING_PROVIDER: ${ROUTING_PROVIDER:-here}
+      # Networks that inspect TLS present their own certificate chain, which Node does not
+      # trust. Drop the root CA into ./certs and point this at it. Deliberately NOT named
+      # NODE_EXTRA_CA_CERTS in the .env: that name is usually already set on the host to a
+      # host-side path, and the host environment wins over the env file in Compose.
+      NODE_EXTRA_CA_CERTS: ${API_EXTRA_CA_CERTS:-}
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "require('http').get('http://127.0.0.1:3000/api/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  db-data:

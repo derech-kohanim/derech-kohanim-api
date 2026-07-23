@@ -1,0 +1,224 @@
+// Relational data only. Zone geometry lives in PostGIS tables created by
+// prisma/migrations/002_postgis_zones.sql and is queried with raw SQL.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                   String    @id @default(uuid())
+  email                String?   @unique
+  passwordHash         String?   @map("password_hash")
+  googleSub            String?   @unique @map("google_sub")
+  displayName          String?   @map("display_name")
+  tier                 String    @default("registered")
+  providers            String[]  @default([])
+  preferences          Json
+  acceptedTermsVersion String?   @map("accepted_terms_version")
+  acceptedTermsAt      DateTime? @map("accepted_terms_at")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+
+  refreshTokens RefreshToken[]
+  savedPlaces   SavedPlace[]
+  recentPlaces  RecentPlace[]
+  navSessions   NavSession[]
+  routes        Route[]
+  reports       RouteReport[]
+
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String    @map("user_id")
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+model TermsDocument {
+  version   String
+  language  String
+  title     String
+  body      String
+  isCurrent Boolean  @default(false) @map("is_current")
+  updatedAt DateTime @default(now()) @map("updated_at")
+
+  @@id([version, language])
+  @@map("terms_documents")
+}
+
+model SavedPlace {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  label     String
+  category  String   @default("other")
+  lat       Float
+  lng       Float
+  address   String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("saved_places")
+}
+
+model RecentPlace {
+  id         String   @id @default(uuid())
+  userId     String   @map("user_id")
+  dedupeKey  String   @map("dedupe_key")
+  title      String
+  subtitle   String?
+  lat        Float
+  lng        Float
+  externalId String?  @map("external_id")
+  useCount   Int      @default(1) @map("use_count")
+  lastUsedAt DateTime @default(now()) @map("last_used_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, dedupeKey])
+  @@index([userId, lastUsedAt])
+  @@map("recent_places")
+}
+
+// One row per (normalised query, language). Google permits caching geocoding results for
+// 30 days; rows older than that are treated as stale and refreshed.
+model GeocodeCache {
+  query     String
+  language  String
+  results   Json
+  hits      Int      @default(0)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@id([query, language])
+  @@map("geocode_cache")
+}
+
+model PlaceDetailsCache {
+  externalId String   @map("external_id")
+  language   String
+  payload    Json
+  hits       Int      @default(0)
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@id([externalId, language])
+  @@map("place_details_cache")
+}
+
+// Short-lived cache for Places (New) text-search results. Stricter than geocoding: the
+// place_id inside each row is durable, the names/addresses are a performance cache only and
+// are refreshed within the window set by PLACES_CACHE_TTL_DAYS.
+model PlacesCache {
+  query     String
+  language  String
+  results   Json
+  hits      Int      @default(0)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@id([query, language])
+  @@map("places_cache")
+}
+
+model Route {
+  id        String   @id
+  userId    String?  @map("user_id")
+  request   Json
+  result    Json
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user        User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+  navSessions NavSession[]
+  reports     RouteReport[]
+
+  @@index([userId])
+  @@map("routes")
+}
+
+// Community reports raised against a computed route, surfaced back in its event bundle.
+model RouteReport {
+  id        String   @id @default(uuid())
+  routeId   String   @map("route_id")
+  userId    String?  @map("user_id")
+  type      String
+  lat       Float
+  lng       Float
+  createdAt DateTime @default(now()) @map("created_at")
+
+  route Route @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  user  User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([routeId])
+  @@map("route_reports")
+}
+
+model NavSession {
+  id           String    @id @default(uuid())
+  userId       String?   @map("user_id")
+  routeId      String    @map("route_id")
+  status       String    @default("navigating")
+  simulated    Boolean   @default(false)
+  stringency   String    @default("basic")
+  trafficAware Boolean   @default(false) @map("traffic_aware")
+  engine       String
+  lastLat      Float?    @map("last_lat")
+  lastLng      Float?    @map("last_lng")
+  offRouteCount Int      @default(0) @map("off_route_count")
+  rerouteCount Int       @default(0) @map("reroute_count")
+  startedAt    DateTime  @default(now()) @map("started_at")
+  endedAt      DateTime? @map("ended_at")
+
+  user  User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+  route Route @relation(fields: [routeId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("nav_sessions")
+}
+
+model VoicePack {
+  id        String   @id
+  language  String
+  voiceId   String   @map("voice_id")
+  version   Int      @default(1)
+  updatedAt DateTime @default(now()) @map("updated_at")
+
+  clips VoiceClip[]
+
+  @@unique([language, voiceId])
+  @@map("voice_packs")
+}
+
+model VoiceClip {
+  id         String   @id @default(uuid())
+  packId     String   @map("pack_id")
+  clipKey    String   @map("clip_key")
+  role       String
+  text       String
+  audioPath  String   @map("audio_path")
+  source     String   @default("recorded")
+  durationMs Int      @map("duration_ms")
+  hash       String
+  // Populated only for generated clips; recorded seed clips carry metadata only and have no
+  // bytes yet, so a request for their audio reports the clip as missing.
+  audio       Bytes?  @map("audio")
+  contentType String? @map("content_type")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  pack VoicePack @relation(fields: [packId], references: [id], onDelete: Cascade)
+
+  @@unique([packId, clipKey])
+  @@map("voice_clips")
+}
