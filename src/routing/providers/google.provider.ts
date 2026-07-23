@@ -66,6 +66,20 @@ export class GoogleProvider implements RoutingProvider {
   private readonly logger = new Logger(GoogleProvider.name);
 
   async computeRoute(request: ProviderRouteRequest): Promise<ProviderRouteResponse> {
+    const raw = await this.fetchRoutes(request);
+    return this.pickBest(raw, request.avoidAreas);
+  }
+
+  async computeRoutes(request: ProviderRouteRequest): Promise<ProviderRouteResponse[]> {
+    const raw = await this.fetchRoutes(request);
+    // Alternatives are genuinely different corridors; the caller verifies each against the
+    // zones and keeps the clean ones. Ordered shortest first, as the pickBest hint.
+    return raw
+      .map((route) => this.toProviderResponse(route))
+      .sort((a, b) => a.distanceMeters - b.distanceMeters);
+  }
+
+  private async fetchRoutes(request: ProviderRouteRequest): Promise<GoogleRoute[]> {
     if (!config.googleRoutesApiKey) {
       throw new Error('GOOGLE_ROUTES_API_KEY is not configured');
     }
@@ -107,8 +121,7 @@ export class GoogleProvider implements RoutingProvider {
     if (routes.length === 0) {
       throw new Error('Google Routes returned no route for this request');
     }
-
-    return this.pickBest(routes, request.avoidAreas);
+    return routes;
   }
 
   /**
@@ -142,7 +155,17 @@ export class GoogleProvider implements RoutingProvider {
   }
 
   private buildBody(request: ProviderRouteRequest): Record<string, unknown> {
-    const { origin, destination, mode, trafficAware, via = [], avoidAreas, language } = request;
+    const {
+      origin,
+      destination,
+      mode,
+      trafficAware,
+      via = [],
+      avoidAreas,
+      avoidTolls,
+      alternatives = 0,
+      language,
+    } = request;
     const isDrive = mode === 'drive';
 
     const body: Record<string, unknown> = {
@@ -151,11 +174,18 @@ export class GoogleProvider implements RoutingProvider {
       travelMode: isDrive ? 'DRIVE' : 'WALK',
       // Alternatives are only offered on a plain origin-to-destination request; Google
       // rejects them together with intermediates, so we only ask when there are no vias.
-      computeAlternativeRoutes: avoidAreas.length > 0 && via.length === 0,
+      // Requested when the caller wants alternatives, or to hand the verifier extra clean
+      // candidates when we are avoiding polygons.
+      computeAlternativeRoutes:
+        (alternatives > 0 || avoidAreas.length > 0) && via.length === 0,
       polylineEncoding: 'ENCODED_POLYLINE',
       languageCode: language,
       units: 'METRIC',
     };
+
+    if (avoidTolls) {
+      body.routeModifiers = { avoidTolls: true };
+    }
 
     if (via.length > 0) {
       // `via: true` marks these as pass-through milestones rather than stops. Without it the

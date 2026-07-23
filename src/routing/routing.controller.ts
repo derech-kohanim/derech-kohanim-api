@@ -6,7 +6,7 @@ import { AppException } from '../common/app-exception';
 import { ProviderRegistry } from './providers/provider-registry';
 import { RouteRequestDto } from './routing.dto';
 import { RoutingService } from './routing.service';
-import type { ProviderInfo, RouteRequest, RouteResult } from '@shared';
+import type { ProviderInfo, RoutePlan, RouteRequest } from '@shared';
 
 @ApiTags('routing')
 @Controller('api')
@@ -21,16 +21,20 @@ export class RoutingController {
   @UseGuards(OptionalAuthGuard)
   @ApiBearerAuth()
   @ApiOperation({
-    summary: 'Compute a route that avoids the active forbidden zones',
+    summary: 'Compute a plan of zone-avoiding routes',
     description:
+      'Returns a RoutePlan: up to 3 zone-verified alternatives, best first, each labeled ' +
+      '(fastest / shortest / alt) and carrying its own id (nav sessions pick one by id). ' +
       'The geometry is always verified server side against the polygons, even when the ' +
-      'provider claims native avoidance. A result with verifiedClean=false is returned for ' +
-      'display and diagnosis only and must not start live navigation.',
+      'provider claims native avoidance; a route with verifiedClean=false is for display and ' +
+      'diagnosis only and cannot start live navigation. avoidTolls is passed to the provider ' +
+      'and reflected in each route avoidsTolls. When includeUnavoided is set and avoidance ' +
+      'actually changed the outcome, unavoidedRoute holds the plain route for comparison.',
   })
   async compute(
     @Body() body: RouteRequestDto,
     @CurrentUserId() userId: string | null,
-  ): Promise<RouteResult> {
+  ): Promise<RoutePlan> {
     const request: RouteRequest = {
       origin: body.origin,
       destination: body.destination,
@@ -39,10 +43,12 @@ export class RoutingController {
       trafficAware: body.trafficAware ?? false,
       language: body.language ?? 'he',
       engine: body.engine,
+      avoidTolls: body.avoidTolls ?? false,
+      includeUnavoided: body.includeUnavoided ?? false,
     };
 
     try {
-      return await this.routing.computeAndStore(request, userId);
+      return await this.routing.computeAndStorePlan(request, userId);
     } catch (error) {
       if (error instanceof AppException) throw error;
       // A provider outage is an upstream failure, not a client error.

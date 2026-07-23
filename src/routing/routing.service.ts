@@ -12,6 +12,7 @@ import {
   suggestViaPoints,
   verifyRouteAgainstZones,
 } from '../common/geo';
+import { maxDeviationMeters } from '../common/geo';
 import { collectVoiceKeys, finaliseManeuvers, type DraftManeuver } from '../common/maneuver';
 import { PrismaService } from '../db/prisma.service';
 import { ZonesService } from '../zones/zones.service';
@@ -21,7 +22,14 @@ import type {
   ProviderRouteResponse,
   RoutingProvider,
 } from './providers/routing-provider';
-import type { LatLng, RouteRequest, RouteResult, ZoneFeature } from '@shared';
+import type {
+  GeoJsonPolygon,
+  LatLng,
+  RoutePlan,
+  RouteRequest,
+  RouteResult,
+  ZoneFeature,
+} from '@shared';
 
 /**
  * We evaluate a handful of candidate via points rather than one, because the geometrically
@@ -42,6 +50,23 @@ const ACCEPTABLE_DETOUR_RATIO = 1.4;
  */
 const MAX_FALLBACK_ROUNDS = 4;
 
+/**
+ * How many native alternatives to request. Deliberately generous: providers return fewer
+ * alternatives once avoid areas constrain the search (HERE collapses to a single route at
+ * alternatives=2 but yields three at 6), so we ask for a wide pool, verify each, drop the
+ * near-identical ones, and keep the best MAX_PLAN_ROUTES. One provider call returns them all.
+ */
+const WANTED_ALTERNATIVES = 6;
+
+/** Most routes to return in a plan. */
+const MAX_PLAN_ROUTES = 3;
+
+/**
+ * Two routes closer than this everywhere are the same corridor. Used to drop near-identical
+ * alternatives so the plan offers genuinely different choices.
+ */
+const DEDUP_DEVIATION_METERS = 80;
+
 /** Identity for the "already tried" set, at roughly 10 m resolution. */
 function viaKey(via: LatLng): string {
   return `${via.lat.toFixed(4)},${via.lng.toFixed(4)}`;
@@ -57,32 +82,44 @@ export class RoutingService {
     private readonly prisma: PrismaService,
   ) {}
 
-  /** Computes a route and stores it, so a navigation session can reference it by id. */
-  async computeAndStore(request: RouteRequest, userId: string | null): Promise<RouteResult> {
-    const result = await this.compute(request);
-    await this.prisma.route.create({
-      data: {
-        id: result.id,
-        userId,
-        request: request as unknown as object,
-        result: result as unknown as object,
-      },
-    });
-    return result;
+  /**
+   * Computes a plan and stores every route in it by id, so a navigation session can reference
+   * a chosen route (or the reroute default) by id.
+   */
+  async computeAndStorePlan(request: RouteRequest, userId: string | null): Promise<RoutePlan> {
+    const plan = await this.computePlan(request);
+    const toStore = [...plan.routes, ...(plan.unavoidedRoute ? [plan.unavoidedRoute] : [])];
+    for (const route of toStore) {
+      await this.prisma.route.create({
+        data: {
+          id: route.id,
+          userId,
+          request: request as unknown as object,
+          result: route as unknown as object,
+        },
+      });
+    }
+    return plan;
   }
 
-  async compute(request: RouteRequest): Promise<RouteResult> {
+  /**
+   * Produces up to three zone-verified alternatives (best first, labeled), honouring toll
+   * avoidance, plus the unavoided route for comparison when asked and when avoidance actually
+   * changed the outcome. Every returned route is independently verified against the zones; the
+   * geometry is never trusted on the provider's word.
+   */
+  async computePlan(request: RouteRequest): Promise<RoutePlan> {
     const attempts: string[] = [];
     const provider = this.registry.get(request.engine);
     const zones = await this.zones.getZones(request.stringency);
     const polygons = zones.map((zone) => zone.geometry);
     attempts.push(
       `provider=${provider.name} nativeAvoidance=${provider.supportsNativeAvoidance} ` +
-        `zones=${zones.length}`,
+        `zones=${zones.length} avoidTolls=${Boolean(request.avoidTolls)}`,
     );
 
-    // (0) Naive baseline with avoidance off. Powers the debug overlay and proves the demo
-    //     data is meaningful, that is, a route that would naturally cross a zone.
+    // (0) Naive baseline with avoidance off. Powers the debug overlay, the detour ratio, and
+    //     the unavoided comparison route.
     const naive = await this.tryCompute(
       provider,
       { ...this.base(request), avoidAreas: [], via: [] },
@@ -93,197 +130,300 @@ export class RoutingService {
     // Fail fast and fail safe: if an endpoint sits inside a zone no route can ever be clean.
     const blockedEndpoint = this.endpointInsideZone(request, zones);
     if (blockedEndpoint) {
-      return this.result(
-        request,
-        provider,
+      const route =
         naive ??
-          (await provider.computeRoute({ ...this.base(request), avoidAreas: [], via: [] })),
-        naive,
-        false,
-        `endpoint_inside_zone:${blockedEndpoint}`,
-        attempts,
-        zones,
-      );
+        (await provider.computeRoute({ ...this.base(request), avoidAreas: [], via: [] }));
+      return {
+        routes: [
+          this.result(
+            request,
+            provider,
+            route,
+            naive,
+            false,
+            `endpoint_inside_zone:${blockedEndpoint}`,
+            attempts,
+            zones,
+          ),
+        ],
+      };
     }
 
-    // (1) Primary attempt - ask the provider to avoid the polygons natively.
-    let candidate = await provider.computeRoute({
-      ...this.base(request),
-      avoidAreas: polygons,
-      via: [],
-    });
-    if (candidate.note) attempts.push(`provider note: ${candidate.note}`);
-    let check = verifyRouteAgainstZones(candidate.geometry, zones);
-    attempts.push(
-      `avoid-areas attempt: clean=${check.clean}` +
-        (check.clean
-          ? ''
-          : ` offending=[${check.offending.map((z) => z.properties.name).join(', ')}]`),
+    // (1) Native candidates - ask the provider to avoid the polygons AND return alternatives.
+    const rawCandidates = await this.tryComputeMany(
+      provider,
+      { ...this.base(request), avoidAreas: polygons, via: [], alternatives: WANTED_ALTERNATIVES },
+      attempts,
+      'native',
     );
 
-    // (2) Heuristic fallback - route through a detour waypoint drawn from a ring around the
-    //     offending zone, and keep the SHORTEST clean result rather than the first one.
-    const referenceDistance = naive?.distanceMeters ?? candidate.distanceMeters;
+    const cleanCandidates: ProviderRouteResponse[] = [];
+    rawCandidates.forEach((candidate, index) => {
+      if (candidate.note) attempts.push(`native candidate ${index} note: ${candidate.note}`);
+      const check = verifyRouteAgainstZones(candidate.geometry, zones);
+      attempts.push(
+        `native candidate ${index}: clean=${check.clean} distance=${candidate.distanceMeters}m` +
+          (check.clean
+            ? ''
+            : ` offending=[${check.offending.map((z) => z.properties.name).join(', ')}]`),
+      );
+      if (check.clean) cleanCandidates.push(candidate);
+    });
 
-    if (!check.clean) {
-      let best: { route: ProviderRouteResponse; via: LatLng } | undefined;
+    let cleanRoutes = this.dedupeCandidates(cleanCandidates);
 
-      // (2a) Plan the whole detour first: one routing call through a chain of waypoints that
-      //      threads between the zones. Clearance widens on each failure - a provider that
-      //      cuts a tight corner back into a zone usually respects a wider corridor.
-      for (const [level, clearance] of PLANNER_CLEARANCES.entries()) {
-        const planned = planDetourWaypoints(
-          request.origin,
-          request.destination,
-          zones,
-          8,
-          clearance,
-        );
-        if (planned === null) {
-          attempts.push(
-            `detour plan L${level + 1}: no zone-free chain exists at this clearance`,
-          );
-          continue;
-        }
-        if (planned.length === 0) break;
-
-        const label = `detour plan L${level + 1} (${planned.length} waypoint(s))`;
-        const planRoute = await this.tryCompute(
-          provider,
-          { ...this.base(request), avoidAreas: polygons, via: planned },
-          attempts,
-          label,
-        );
-        if (!planRoute) continue;
-
-        const planCheck = verifyRouteAgainstZones(planRoute.geometry, zones);
-        attempts.push(
-          `${label} gave clean=${planCheck.clean} distance=${planRoute.distanceMeters}m` +
-            (planCheck.clean
-              ? ''
-              : ` offending=[${planCheck.offending
-                  .map((z) => z.properties.name)
-                  .join(', ')}]`),
-        );
-        if (planCheck.clean) {
-          best = { route: planRoute, via: planned[0] };
-          break;
-        }
-      }
-
-      // Zones known to block us. A retry often trades one zone for another, so this grows as
-      // we learn, and the candidate ring is rebuilt around everything that blocks.
-      const blocking: ZoneFeature[] = [...check.offending];
-      const tried = new Set<string>();
-      let budget =
-        best && best.route.distanceMeters <= referenceDistance * ACCEPTABLE_DETOUR_RATIO
-          ? 0
-          : MAX_VIA_ATTEMPTS;
-
-      for (let round = 1; round <= MAX_FALLBACK_ROUNDS && budget > 0; round++) {
-        const candidates = suggestViaPoints(
-          request.origin,
-          request.destination,
-          blocking,
-          zones,
-          budget,
-        ).filter((via) => !tried.has(viaKey(via)));
-
-        if (candidates.length === 0) break;
-        attempts.push(
-          `fallback round ${round}: ${candidates.length} candidate(s) around ` +
-            `[${blocking.map((z) => z.properties.name).join(', ')}]`,
-        );
-
-        let learnedSomething = false;
-
-        for (const via of candidates) {
-          if (budget <= 0) break;
-          tried.add(viaKey(via));
-          budget--;
-
-          const label = `via ${via.lat.toFixed(5)},${via.lng.toFixed(5)}`;
-          const retry = await this.tryCompute(
-            provider,
-            { ...this.base(request), avoidAreas: polygons, via: [via] },
-            attempts,
-            label,
-          );
-          if (!retry) continue;
-
-          const retryCheck = verifyRouteAgainstZones(retry.geometry, zones);
-          attempts.push(
-            `${label} gave clean=${retryCheck.clean} distance=${retry.distanceMeters}m` +
-              (retryCheck.clean
-                ? ''
-                : ` offending=[${retryCheck.offending
-                    .map((z) => z.properties.name)
-                    .join(', ')}]`),
-          );
-
-          if (!retryCheck.clean) {
-            for (const zone of retryCheck.offending) {
-              if (!blocking.some((known) => known.properties.id === zone.properties.id)) {
-                blocking.push(zone);
-                learnedSomething = true;
-              }
-            }
-            // A newly discovered blocker invalidates the rest of this round's shortlist.
-            if (learnedSomething) break;
-            continue;
-          }
-
-          if (!best || retry.distanceMeters < best.route.distanceMeters) {
-            best = { route: retry, via };
-          }
-          if (best.route.distanceMeters <= referenceDistance * ACCEPTABLE_DETOUR_RATIO) {
-            attempts.push('fallback: detour is short enough, stopping the search');
-            budget = 0;
-            break;
-          }
-        }
-
-        if (!learnedSomething) break;
-      }
-
-      if (best) {
-        candidate = best.route;
-        check = { clean: true, offending: [] };
-        attempts.push(
-          `fallback: chose ${best.via.lat.toFixed(5)},${best.via.lng.toFixed(5)} ` +
-            `(${best.route.distanceMeters}m vs naive ${referenceDistance}m)`,
-        );
-      }
-      // No clean candidate: `candidate` stays the provider's own avoid-areas attempt, which
-      // is returned flagged as unusable rather than silently presented as safe.
+    // (2) If native avoidance produced nothing clean, run the heuristic detour search for one
+    //     clean route. This is the guarantee path for engines that cannot block polygons.
+    if (cleanRoutes.length === 0) {
+      const heuristic = await this.findCleanByHeuristic(
+        request,
+        provider,
+        zones,
+        polygons,
+        naive,
+        attempts,
+      );
+      if (heuristic) cleanRoutes = [heuristic];
     }
 
-    if (!check.clean) {
+    // (3) Assemble the plan.
+    let routes: RouteResult[];
+    if (cleanRoutes.length > 0) {
+      const built = cleanRoutes.map((route) =>
+        this.result(request, provider, route, naive, true, undefined, attempts, zones),
+      );
+      routes = this.labelAndOrder(built).slice(0, MAX_PLAN_ROUTES);
+    } else {
+      // Fail safe: never pad with an unclean alternative. Return the single unclean attempt,
+      // flagged unusable, so the client can show "no clean route" and nav refuses it.
       this.logger.warn(
         `Failing safe: no clean route for ${JSON.stringify(request.origin)} to ` +
           `${JSON.stringify(request.destination)} at stringency=${request.stringency}`,
       );
+      const fallback = rawCandidates[0] ?? naive;
+      routes = fallback
+        ? [
+            this.result(
+              request,
+              provider,
+              fallback,
+              naive,
+              false,
+              'avoidance_failed',
+              attempts,
+              zones,
+            ),
+          ]
+        : [];
     }
 
-    return this.result(
-      request,
-      provider,
-      candidate,
-      naive,
-      check.clean,
-      check.clean ? undefined : 'avoidance_failed',
-      attempts,
-      zones,
-    );
+    // (4) The unavoided route, for side-by-side comparison, only when it was asked for AND
+    //     avoidance actually changed the outcome (the plain route crosses a zone).
+    let unavoidedRoute: RouteResult | undefined;
+    if (request.includeUnavoided && naive) {
+      const naiveCheck = verifyRouteAgainstZones(naive.geometry, zones);
+      if (!naiveCheck.clean) {
+        unavoidedRoute = this.result(
+          request,
+          provider,
+          naive,
+          naive,
+          false,
+          'unavoided_comparison',
+          attempts,
+          zones,
+          { label: 'unavoided' },
+        );
+      }
+    }
+
+    return { routes, ...(unavoidedRoute ? { unavoidedRoute } : {}) };
   }
 
-  private base(request: RouteRequest): Omit<ProviderRouteRequest, 'avoidAreas' | 'via'> {
+  /**
+   * Heuristic detour search: the visibility-graph planner then a ring of candidate via points,
+   * keeping the SHORTEST clean result. Returns one clean route or null. Extracted so the plan
+   * flow uses it only when native avoidance yields nothing clean.
+   */
+  private async findCleanByHeuristic(
+    request: RouteRequest,
+    provider: RoutingProvider,
+    zones: ZoneFeature[],
+    polygons: GeoJsonPolygon[],
+    naive: ProviderRouteResponse | null,
+    attempts: string[],
+  ): Promise<ProviderRouteResponse | null> {
+    let best: { route: ProviderRouteResponse; via: LatLng } | undefined;
+    const referenceDistance = naive?.distanceMeters ?? Number.POSITIVE_INFINITY;
+
+    // Plan the whole detour first: one routing call through a chain of waypoints that threads
+    // between the zones. Clearance widens on each failure.
+    for (const [level, clearance] of PLANNER_CLEARANCES.entries()) {
+      const planned = planDetourWaypoints(
+        request.origin,
+        request.destination,
+        zones,
+        8,
+        clearance,
+      );
+      if (planned === null) {
+        attempts.push(`detour plan L${level + 1}: no zone-free chain exists at this clearance`);
+        continue;
+      }
+      if (planned.length === 0) break;
+
+      const label = `detour plan L${level + 1} (${planned.length} waypoint(s))`;
+      const planRoute = await this.tryCompute(
+        provider,
+        { ...this.base(request), avoidAreas: polygons, via: planned },
+        attempts,
+        label,
+      );
+      if (!planRoute) continue;
+
+      const planCheck = verifyRouteAgainstZones(planRoute.geometry, zones);
+      attempts.push(
+        `${label} gave clean=${planCheck.clean} distance=${planRoute.distanceMeters}m` +
+          (planCheck.clean
+            ? ''
+            : ` offending=[${planCheck.offending.map((z) => z.properties.name).join(', ')}]`),
+      );
+      if (planCheck.clean) {
+        best = { route: planRoute, via: planned[0] };
+        break;
+      }
+    }
+
+    const firstOffending = verifyRouteAgainstZones(
+      naive?.geometry ?? { type: 'LineString', coordinates: [] },
+      zones,
+    ).offending;
+    const blocking: ZoneFeature[] = [...firstOffending];
+    const tried = new Set<string>();
+    let budget =
+      best && best.route.distanceMeters <= referenceDistance * ACCEPTABLE_DETOUR_RATIO
+        ? 0
+        : MAX_VIA_ATTEMPTS;
+
+    for (let round = 1; round <= MAX_FALLBACK_ROUNDS && budget > 0; round++) {
+      const candidates = suggestViaPoints(
+        request.origin,
+        request.destination,
+        blocking,
+        zones,
+        budget,
+      ).filter((via) => !tried.has(viaKey(via)));
+
+      if (candidates.length === 0) break;
+      attempts.push(
+        `fallback round ${round}: ${candidates.length} candidate(s) around ` +
+          `[${blocking.map((z) => z.properties.name).join(', ')}]`,
+      );
+
+      let learnedSomething = false;
+
+      for (const via of candidates) {
+        if (budget <= 0) break;
+        tried.add(viaKey(via));
+        budget--;
+
+        const label = `via ${via.lat.toFixed(5)},${via.lng.toFixed(5)}`;
+        const retry = await this.tryCompute(
+          provider,
+          { ...this.base(request), avoidAreas: polygons, via: [via] },
+          attempts,
+          label,
+        );
+        if (!retry) continue;
+
+        const retryCheck = verifyRouteAgainstZones(retry.geometry, zones);
+        attempts.push(
+          `${label} gave clean=${retryCheck.clean} distance=${retry.distanceMeters}m` +
+            (retryCheck.clean
+              ? ''
+              : ` offending=[${retryCheck.offending
+                  .map((z) => z.properties.name)
+                  .join(', ')}]`),
+        );
+
+        if (!retryCheck.clean) {
+          for (const zone of retryCheck.offending) {
+            if (!blocking.some((known) => known.properties.id === zone.properties.id)) {
+              blocking.push(zone);
+              learnedSomething = true;
+            }
+          }
+          if (learnedSomething) break;
+          continue;
+        }
+
+        if (!best || retry.distanceMeters < best.route.distanceMeters) {
+          best = { route: retry, via };
+        }
+        if (best.route.distanceMeters <= referenceDistance * ACCEPTABLE_DETOUR_RATIO) {
+          attempts.push('fallback: detour is short enough, stopping the search');
+          budget = 0;
+          break;
+        }
+      }
+
+      if (!learnedSomething) break;
+    }
+
+    if (best) {
+      attempts.push(
+        `fallback: chose ${best.via.lat.toFixed(5)},${best.via.lng.toFixed(5)} ` +
+          `(${best.route.distanceMeters}m vs naive ${referenceDistance}m)`,
+      );
+      return best.route;
+    }
+    return null;
+  }
+
+  /** Drops near-identical candidates so the plan offers genuinely different corridors. */
+  private dedupeCandidates(candidates: ProviderRouteResponse[]): ProviderRouteResponse[] {
+    const kept: ProviderRouteResponse[] = [];
+    for (const candidate of candidates) {
+      const duplicate = kept.some(
+        (other) =>
+          maxDeviationMeters(other.geometry, candidate.geometry) < DEDUP_DEVIATION_METERS &&
+          maxDeviationMeters(candidate.geometry, other.geometry) < DEDUP_DEVIATION_METERS,
+      );
+      if (!duplicate) kept.push(candidate);
+    }
+    return kept;
+  }
+
+  /**
+   * Orders the routes fastest first and labels them: the quickest is "fastest", the shortest
+   * by distance (when different) is "shortest", the rest "alt".
+   */
+  private labelAndOrder(routes: RouteResult[]): RouteResult[] {
+    const ordered = [...routes].sort((a, b) => a.durationSeconds - b.durationSeconds);
+    if (ordered.length === 0) return ordered;
+
+    let shortestIndex = 0;
+    ordered.forEach((route, index) => {
+      if (route.distanceMeters < ordered[shortestIndex].distanceMeters) shortestIndex = index;
+    });
+
+    return ordered.map((route, index) => ({
+      ...route,
+      label:
+        index === 0 ? 'fastest' : index === shortestIndex ? 'shortest' : 'alt',
+    }));
+  }
+
+  private base(
+    request: RouteRequest,
+  ): Omit<ProviderRouteRequest, 'avoidAreas' | 'via' | 'alternatives'> {
     return {
       origin: request.origin,
       destination: request.destination,
       mode: request.mode,
       trafficAware: request.trafficAware,
       language: request.language ?? 'he',
+      avoidTolls: request.avoidTolls ?? false,
     };
   }
 
@@ -320,6 +460,29 @@ export class RoutingService {
     }
   }
 
+  /**
+   * Primary plus native alternatives. Uses the provider's `computeRoutes` when it offers one,
+   * otherwise a single `computeRoute`. Never throws: an upstream failure yields an empty list
+   * and the caller falls back to the heuristic.
+   */
+  private async tryComputeMany(
+    provider: RoutingProvider,
+    request: ProviderRouteRequest,
+    attempts: string[],
+    label: string,
+  ): Promise<ProviderRouteResponse[]> {
+    try {
+      if (provider.computeRoutes) return await provider.computeRoutes(request);
+      const single = await provider.computeRoute(request);
+      return [single];
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      attempts.push(`${label} attempt failed: ${message}`);
+      this.logger.warn(`${label} attempt failed: ${message}`);
+      return [];
+    }
+  }
+
   private result(
     request: RouteRequest,
     provider: RoutingProvider,
@@ -329,6 +492,7 @@ export class RoutingService {
     reason: string | undefined,
     attempts: string[],
     zones: ZoneFeature[],
+    options: { label?: string } = {},
   ): RouteResult {
     const id = randomUUID();
     const drafts = this.normaliseDrafts(route);
@@ -341,6 +505,10 @@ export class RoutingService {
         ? Math.round((route.distanceMeters / naive.distanceMeters) * 100) / 100
         : undefined;
 
+    // Only providers that can express toll avoidance mark a route as toll-free; the mock
+    // engine cannot, so it never claims to.
+    const avoidsTolls = Boolean(request.avoidTolls) && provider.name !== 'mock';
+
     return {
       id,
       geometry: route.geometry,
@@ -351,6 +519,8 @@ export class RoutingService {
       reason,
       attribution: provider.attribution,
       engine: provider.name as RouteResult['engine'],
+      ...(avoidsTolls ? { avoidsTolls: true } : {}),
+      ...(options.label ? { label: options.label } : {}),
       detourRatio,
       requiredVoiceKeys: collectVoiceKeys(maneuvers),
       debug: {

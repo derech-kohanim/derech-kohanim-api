@@ -98,9 +98,9 @@ async function main(): Promise<void> {
         engine,
       };
 
-      let result;
+      let plan;
       try {
-        result = await routing.compute(request);
+        plan = await routing.computePlan(request);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         const status = isUpstreamError(message) ? 'skip' : 'fail';
@@ -108,6 +108,30 @@ async function main(): Promise<void> {
         process.stdout.write(`  ${status.toUpperCase()} compute threw: ${message}\n`);
         continue;
       }
+
+      // Plan shape: 1..3 routes, best first. Every route in a clean preset must be verified.
+      checks.push({
+        label: `${engine}/${preset.id}: plan has 1..${3} routes`,
+        status: plan.routes.length >= 1 && plan.routes.length <= 3 ? 'pass' : 'fail',
+        detail: `${plan.routes.length} route(s), labels=[${plan.routes
+          .map((r) => r.label ?? '-')
+          .join(', ')}]`,
+      });
+      if (preset.expect === 'clean') {
+        const allClean = plan.routes.every(
+          (r) => r.verifiedClean && verifyRouteAgainstZones(r.geometry, zones).clean,
+        );
+        // Only assert when the primary is clean (a real engine may genuinely give up upstream).
+        if (plan.routes[0]?.verifiedClean) {
+          checks.push({
+            label: `${engine}/${preset.id}: every alternative in the plan is verified clean`,
+            status: allClean ? 'pass' : 'fail',
+            detail: `${plan.routes.length} route(s), all verified clean = ${allClean}`,
+          });
+        }
+      }
+
+      const result = plan.routes[0];
 
       // Cross-cutting fail-safe invariant: a clean flag must be backed by real geometry.
       if (result.verifiedClean) {
@@ -178,8 +202,8 @@ async function main(): Promise<void> {
         engine: 'hybrid' as RoutingEngine,
       };
       try {
-        const free = await routing.compute({ ...base, trafficAware: false });
-        const live = await routing.compute({ ...base, trafficAware: true });
+        const free = (await routing.computePlan({ ...base, trafficAware: false })).routes[0];
+        const live = (await routing.computePlan({ ...base, trafficAware: true })).routes[0];
 
         const pricedNote = (r: typeof free): boolean =>
           (r.debug?.attempts ?? []).some((a) => a.includes('priced by Google'));
@@ -212,6 +236,76 @@ async function main(): Promise<void> {
         const message = error instanceof Error ? error.message : String(error);
         checks.push({
           label: `hybrid/${preset.id}: pricing`,
+          status: isUpstreamError(message) ? 'skip' : 'fail',
+          detail: message,
+        });
+      }
+    }
+  }
+
+  // RoutePlan features: alternatives count, toll avoidance pass-through, and the unavoided
+  // comparison route appearing only when avoidance actually changed the outcome.
+  {
+    process.stdout.write(`\n=== RoutePlan features (default engine) ===\n`);
+    for (const preset of ROUTING_PRESETS.filter((p) => p.expect === 'clean')) {
+      const base = {
+        origin: preset.origin,
+        destination: preset.destination,
+        stringency: preset.stringency,
+        mode: 'drive' as const,
+        trafficAware: false,
+        language: 'he' as const,
+      };
+      try {
+        const plain = await routing.computePlan(base);
+        process.stdout.write(
+          `  ${preset.id}: ${plain.routes.length} clean alternative(s) ` +
+            `[${plain.routes.map((r) => r.label ?? '-').join(', ')}]\n`,
+        );
+
+        // avoidTolls must be reflected on each returned route.
+        const tolled = await routing.computePlan({ ...base, avoidTolls: true });
+        checks.push({
+          label: `plan/${preset.id}: avoidTolls sets avoidsTolls on every route`,
+          status:
+            tolled.routes.length > 0 && tolled.routes.every((r) => r.avoidsTolls === true)
+              ? 'pass'
+              : 'fail',
+          detail: `avoidsTolls=[${tolled.routes.map((r) => String(r.avoidsTolls)).join(', ')}]`,
+        });
+
+        // includeUnavoided: present here because these presets cross a zone without avoidance.
+        const withUnavoided = await routing.computePlan({ ...base, includeUnavoided: true });
+        const naiveCrosses = !verifyRouteAgainstZones(
+          withUnavoided.routes[0]?.debug?.naiveGeometry ?? {
+            type: 'LineString',
+            coordinates: [],
+          },
+          await zonesService.getZones(preset.stringency),
+        ).clean;
+        checks.push({
+          label: `plan/${preset.id}: unavoidedRoute present when avoidance bit`,
+          status:
+            naiveCrosses &&
+            withUnavoided.unavoidedRoute != null &&
+            withUnavoided.unavoidedRoute.verifiedClean === false
+              ? 'pass'
+              : 'fail',
+          detail: `naiveCrosses=${naiveCrosses} unavoided=${
+            withUnavoided.unavoidedRoute ? 'present' : 'absent'
+          }`,
+        });
+
+        // And absent when avoidance was not requested to be surfaced.
+        checks.push({
+          label: `plan/${preset.id}: unavoidedRoute absent unless includeUnavoided`,
+          status: plain.unavoidedRoute == null ? 'pass' : 'fail',
+          detail: `unavoided=${plain.unavoidedRoute ? 'present' : 'absent'}`,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        checks.push({
+          label: `plan/${preset.id}: features`,
           status: isUpstreamError(message) ? 'skip' : 'fail',
           detail: message,
         });

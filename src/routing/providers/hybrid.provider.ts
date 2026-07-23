@@ -79,6 +79,24 @@ export class HybridProvider implements RoutingProvider {
 
   async computeRoute(request: ProviderRouteRequest): Promise<ProviderRouteResponse> {
     const base = await this.shape.computeRoute(request);
+    return this.priceShape(base, request);
+  }
+
+  /**
+   * Each alternative shape comes from the polygon-blocking engine and is priced by Google
+   * independently, so every returned route keeps the same safety invariants as the single one.
+   */
+  async computeRoutes(request: ProviderRouteRequest): Promise<ProviderRouteResponse[]> {
+    const shapes = this.shape.computeRoutes
+      ? await this.shape.computeRoutes(request)
+      : [await this.shape.computeRoute(request)];
+    return Promise.all(shapes.map((shape) => this.priceShape(shape, request)));
+  }
+
+  private async priceShape(
+    base: ProviderRouteResponse,
+    request: ProviderRouteRequest,
+  ): Promise<ProviderRouteResponse> {
     const mode = request.trafficAware ? 'TRAFFIC_AWARE' : 'TRAFFIC_UNAWARE';
 
     // Never price a shape that still touches a zone: that candidate is about to be discarded.

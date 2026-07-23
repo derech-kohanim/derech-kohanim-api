@@ -43,4 +43,22 @@ export class RouteRequestDto {
   @IsOptional()
   @IsIn(ROUTING_ENGINES)
   engine?: RoutingEngine;
+
+  @ApiPropertyOptional({
+    default: false,
+    description: 'Avoid toll roads. Passed to the provider and reflected in each route.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  avoidTolls?: boolean;
+
+  @ApiPropertyOptional({
+    default: false,
+    description:
+      'Also return the plain route with no zone avoidance, for comparison. Only filled when ' +
+      'avoidance actually changed the outcome.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  includeUnavoided?: boolean;
 }

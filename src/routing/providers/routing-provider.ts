@@ -12,6 +12,13 @@ export interface ProviderRouteRequest {
   via?: LatLng[];
   /** Language for the provider's turn instructions. */
   language: Language;
+  /** Avoid toll roads. Ignored by providers that cannot express it. */
+  avoidTolls?: boolean;
+  /**
+   * How many ALTERNATIVE routes to request beyond the primary one, for `computeRoutes`.
+   * 0 (or absent) means just the primary. Ignored by `computeRoute`.
+   */
+  alternatives?: number;
 }
 
 export interface ProviderRouteResponse {
@@ -37,4 +44,11 @@ export interface RoutingProvider {
   readonly supportsLiveTraffic: boolean;
 
   computeRoute(request: ProviderRouteRequest): Promise<ProviderRouteResponse>;
+
+  /**
+   * Returns the primary route plus up to `request.alternatives` native alternatives. Providers
+   * that cannot produce alternatives may omit this; RoutingService then falls back to a single
+   * `computeRoute`. Each element is an independent candidate; the caller verifies every one.
+   */
+  computeRoutes?(request: ProviderRouteRequest): Promise<ProviderRouteResponse[]>;
 }

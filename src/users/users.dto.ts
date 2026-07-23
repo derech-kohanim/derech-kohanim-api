@@ -27,6 +27,11 @@ export class UpdatePreferencesDto {
   @IsBoolean()
   trafficAware?: boolean;
 
+  @ApiPropertyOptional({ description: 'Avoid toll roads by default' })
+  @IsOptional()
+  @IsBoolean()
+  avoidTolls?: boolean;
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsBoolean()

@@ -55,6 +55,11 @@ export class HereProvider implements RoutingProvider {
   private polygonAvoidSupported = true;
 
   async computeRoute(request: ProviderRouteRequest): Promise<ProviderRouteResponse> {
+    const routes = await this.computeRoutes({ ...request, alternatives: 0 });
+    return routes[0];
+  }
+
+  async computeRoutes(request: ProviderRouteRequest): Promise<ProviderRouteResponse[]> {
     if (!config.hereApiKey) {
       throw new Error('HERE_API_KEY is not configured');
     }
@@ -79,7 +84,7 @@ export class HereProvider implements RoutingProvider {
   private async request(
     request: ProviderRouteRequest,
     usePolygons: boolean,
-  ): Promise<ProviderRouteResponse> {
+  ): Promise<ProviderRouteResponse[]> {
     const url = this.buildUrl(request, usePolygons);
     const response = await fetch(url, { headers: { Accept: 'application/json' } });
     const bodyText = await response.text();
@@ -96,16 +101,29 @@ export class HereProvider implements RoutingProvider {
       throw new Error(`HERE routing failed (${response.status}): ${detail}`);
     }
 
-    const sections = body.routes?.[0]?.sections ?? [];
-    if (sections.length === 0) {
+    const routes = (body.routes ?? [])
+      .map((route) => route.sections ?? [])
+      .filter((sections) => sections.length > 0)
+      .map((sections) => this.toProviderResponse(sections));
+
+    if (routes.length === 0) {
       throw new Error('HERE returned no route sections for this request');
     }
-
-    return this.toProviderResponse(sections);
+    return routes;
   }
 
   private buildUrl(request: ProviderRouteRequest, usePolygons: boolean): string {
-    const { origin, destination, mode, trafficAware, via = [], avoidAreas, language } = request;
+    const {
+      origin,
+      destination,
+      mode,
+      trafficAware,
+      via = [],
+      avoidAreas,
+      avoidTolls,
+      alternatives = 0,
+      language,
+    } = request;
 
     // Built by hand (not URLSearchParams) so the `avoid[areas]` bracket syntax survives.
     const params: string[] = [
@@ -122,11 +140,21 @@ export class HereProvider implements RoutingProvider {
       params.push(`via=${this.point(waypoint)}`);
     }
 
+    // HERE only honours `alternatives` on a plain origin-to-destination request; via points
+    // pin the shape and it returns a single route regardless.
+    if (alternatives > 0 && via.length === 0) {
+      params.push(`alternatives=${Math.min(alternatives, 6)}`);
+    }
+
     if (mode === 'drive' && !trafficAware) {
       // `any` = time-independent routing, the traffic-free baseline. Traffic-aware is the
       // default: v8 departs now with live traffic when departureTime is omitted. Do not send
       // the literal `now` - v8 rejects it as an invalid date and time.
       params.push('departureTime=any');
+    }
+
+    if (avoidTolls) {
+      params.push(`avoid[features]=tollRoad`);
     }
 
     if (avoidAreas.length > 0) {

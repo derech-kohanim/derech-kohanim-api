@@ -187,17 +187,19 @@ export class NavigationService {
   ): Promise<RouteResult> {
     this.logger.log(`Session ${sessionId}: driver left the route, recomputing`);
 
-    const result = await this.routing.computeAndStore(
+    const plan = await this.routing.computeAndStorePlan(
       { ...request, origin: from },
       userId,
     );
 
-    if (!result.verifiedClean) {
+    // The reroute takes the best (fastest) clean alternative.
+    const result = plan.routes[0];
+    if (!result || !result.verifiedClean) {
       // Failing safe is the point: say so rather than quietly guide through a zone.
       throw AppException.badGateway(
         'reroute_not_verified',
         'No verified clean route was found from the current position',
-        { reason: result.reason },
+        { reason: result?.reason },
       );
     }
 

@@ -102,8 +102,11 @@ demo@derech-kohanim.local / derech1234
 |------|------|--------|
 | GET | `/api/users/me` | פרופיל |
 | PATCH | `/api/users/me` | עדכון שם תצוגה |
-| GET | `/api/users/me/preferences` | שפה, ערכת נושא, רמת חומרה, תנועה, קול |
+| GET | `/api/users/me/preferences` | שפה, ערכת נושא, רמת חומרה, תנועה, הימנעות מאגרה, קול |
 | PATCH | `/api/users/me/preferences` | עדכון חלקי של ההעדפות |
+
+ההעדפות כוללות `avoidTolls` (ברירת מחדל `false`), שמסתנכרן בין המכשירים. שורות שנכתבו לפני
+שהשדה נוסף מקבלות `false` כברירת מחדל ולא נכשלות, כי ההעדפות נשמרות כ-JSON.
 
 ### מקומות
 
@@ -156,15 +159,32 @@ demo@derech-kohanim.local / derech1234
 |------|------|--------|
 | POST | `/api/routes/compute` | חישוב מסלול |
 
-הגוף כולל `origin`, `destination`, `stringency`, `mode`, `trafficAware`, `language`
-ו-`engine` אופציונלי. התשובה היא `RouteResult` של החוזה המשותף: מזהה יציב, גיאומטריה,
-רשימת הנחיות, `verifiedClean`, `reason`, `detourRatio`, `attribution`, `engine`
-ו-`requiredVoiceKeys`.
+הגוף כולל `origin`, `destination`, `stringency`, `mode`, `trafficAware`, `language`,
+`engine` אופציונלי, וכן `avoidTolls` ו-`includeUnavoided`. התשובה היא `RoutePlan`:
 
+```
+RoutePlan {
+  routes: RouteResult[]       עד שלוש חלופות מאומתות, הטובה ראשונה, כל אחת עם label
+  unavoidedRoute?: RouteResult   המסלול הרגיל ללא הימנעות, להשוואה בלבד
+}
+```
+
+- **עד שלוש חלופות.** נלקחות מהחלופות המובנות של הספק (HERE `alternatives`, Google
+  `computeAlternativeRoutes`), כל אחת מאומתת בנפרד מול האזורים, הנקיות נשמרות, כפילויות קרובות
+  מסוננות, והתוצאה מתויגת `fastest` / `shortest` / `alt`. לכל חלופה `id` משלה, וסשן ניווט בוחר
+  אחת לפי `id`. אם יש רק חלופה נקייה אחת או שתיים, מוחזרות אלו, ולעולם לא מרפדים בחלופה לא נקייה
+- **הימנעות מכבישי אגרה.** `avoidTolls: true` מועבר לספק (HERE `avoid[features]=tollRoad`,
+  Google `routeModifiers.avoidTolls`, GraphHopper דרך ה-custom model), ומסומן ב-`avoidsTolls`
+  בכל מסלול מוחזר. מרכיב יחד עם הימנעות האזורים והחלופות
+- **המסלול הלא נמנע להשוואה.** כאשר `includeUnavoided: true` וההימנעות באמת שינתה את התוצאה
+  (המסלול הרגיל חוצה אזור), מוחזר `unavoidedRoute`: המסלול הרגיל ללא הימנעות, תמיד
+  `verifiedClean: false`, לתצוגה בלבד ולא לניווט
+
+כל `RouteResult` נושא מזהה יציב, גיאומטריה, רשימת הנחיות, `verifiedClean`, `reason`,
+`detourRatio`, `attribution`, `engine`, `requiredVoiceKeys`, ואופציונלית `avoidsTolls` ו-`label`.
 כל הנחיה נושאת `action` יציב (למשל `turn_right`), `distanceMeters` מההנחיה הקודמת,
-`geometryIndex` לתוך הגיאומטריה, `street` ו-`voiceKeys`. אזהרות אזור מוזרקות לתוך רשימת
-ההנחיות עצמה כ-`zone_enter`, `zone_exit`, `zone_origin` ו-`zone_destination`, במקום
-המדויק שבו הן קורות.
+`geometryIndex`, `street` ו-`voiceKeys`. אזהרות אזור מוזרקות לרשימת ההנחיות כ-`zone_enter`,
+`zone_exit`, `zone_origin` ו-`zone_destination`, במקום המדויק שבו הן קורות.
 
 **כל גיאומטריה מאומתת בשרת** מול הפוליגונים, גם כשהספק הצהיר שהוא נמנע. מסלול עם
 `verifiedClean: false` מוחזר לצורך הצגה ואבחון בלבד, ואי אפשר לפתוח ממנו סשן ניווט.

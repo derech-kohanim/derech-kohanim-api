@@ -51,6 +51,11 @@ export class GraphHopperProvider implements RoutingProvider {
   private readonly logger = new Logger(GraphHopperProvider.name);
 
   async computeRoute(request: ProviderRouteRequest): Promise<ProviderRouteResponse> {
+    const routes = await this.computeRoutes({ ...request, alternatives: 0 });
+    return routes[0];
+  }
+
+  async computeRoutes(request: ProviderRouteRequest): Promise<ProviderRouteResponse[]> {
     const url = new URL(config.graphHopperUrl);
     // A self-hosted instance needs no key.
     if (config.graphHopperApiKey) url.searchParams.set('key', config.graphHopperApiKey);
@@ -76,22 +81,27 @@ export class GraphHopperProvider implements RoutingProvider {
       throw new Error(`GraphHopper routing failed (${response.status}): ${detail}`);
     }
 
-    const path = body.paths?.[0];
-    const coordinates = path?.points?.coordinates;
-    if (!path || !coordinates || coordinates.length < 2) {
+    const paths = (body.paths ?? []).filter(
+      (path) => (path.points?.coordinates?.length ?? 0) >= 2,
+    );
+    if (paths.length === 0) {
       throw new Error('GraphHopper returned no route for this request');
     }
 
-    return {
-      geometry: { type: 'LineString', coordinates },
-      maneuvers: this.toManeuvers(path, coordinates),
-      distanceMeters: Math.round(path.distance ?? 0),
-      durationSeconds: Math.round((path.time ?? 0) / 1000),
-    };
+    return paths.map((path) => {
+      const coordinates = path.points!.coordinates!;
+      return {
+        geometry: { type: 'LineString' as const, coordinates },
+        maneuvers: this.toManeuvers(path, coordinates),
+        distanceMeters: Math.round(path.distance ?? 0),
+        durationSeconds: Math.round((path.time ?? 0) / 1000),
+      };
+    });
   }
 
   private buildBody(request: ProviderRouteRequest): Record<string, unknown> {
-    const { origin, destination, mode, via = [], avoidAreas, language } = request;
+    const { origin, destination, mode, via = [], avoidAreas, avoidTolls, language } = request;
+    const alternatives = request.alternatives ?? 0;
 
     const points = [origin, ...via, destination].map((p) => [p.lng, p.lat]);
 
@@ -105,9 +115,16 @@ export class GraphHopperProvider implements RoutingProvider {
       calc_points: true,
     };
 
-    if (avoidAreas.length > 0) {
+    const needsCustomModel = avoidAreas.length > 0 || avoidTolls;
+    if (needsCustomModel) {
       body['ch.disable'] = true; // custom models are only available in flexible mode
-      body.custom_model = this.buildCustomModel(avoidAreas);
+      body.custom_model = this.buildCustomModel(avoidAreas, Boolean(avoidTolls));
+    }
+
+    // Alternatives need the plain two-point request; via points already pin the shape.
+    if (alternatives > 0 && via.length === 0 && !needsCustomModel) {
+      body.algorithm = 'alternative_route';
+      body['alternative_route.max_paths'] = Math.min(alternatives + 1, 4);
     }
 
     if (request.trafficAware) {
@@ -119,8 +136,14 @@ export class GraphHopperProvider implements RoutingProvider {
     return body;
   }
 
-  /** Each zone becomes an area with priority 0, that is, impassable. */
-  private buildCustomModel(polygons: GeoJsonPolygon[]): Record<string, unknown> {
+  /**
+   * Zones become areas with priority 0 (impassable). When avoidTolls is set, toll roads are
+   * multiplied by 0 too, using the `toll` encoded value the car profile carries.
+   */
+  private buildCustomModel(
+    polygons: GeoJsonPolygon[],
+    avoidTolls: boolean,
+  ): Record<string, unknown> {
     const features = polygons.map((polygon, index) => ({
       type: 'Feature',
       id: `zone_${index}`,
@@ -128,8 +151,18 @@ export class GraphHopperProvider implements RoutingProvider {
       geometry: { type: 'Polygon', coordinates: this.closedRing(polygon) },
     }));
 
+    const priority: { if: string; multiply_by: string }[] = features.map((feature) => ({
+      if: `in_${feature.id}`,
+      multiply_by: '0',
+    }));
+    if (avoidTolls) {
+      // The car profile carries a `toll` encoded value (NO/ALL/HGV); block the tolled ones.
+      priority.push({ if: 'toll == ALL', multiply_by: '0' });
+      priority.push({ if: 'toll == HGV', multiply_by: '0' });
+    }
+
     return {
-      priority: features.map((feature) => ({ if: `in_${feature.id}`, multiply_by: '0' })),
+      priority,
       areas: { type: 'FeatureCollection', features },
     };
   }
