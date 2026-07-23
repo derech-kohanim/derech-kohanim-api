@@ -21,6 +21,9 @@ interface ZoneRow {
   name: string;
   name_he: string;
   stringency: Stringency;
+  city: string | null;
+  street: string | null;
+  description: string | null;
   geojson: string;
 }
 
@@ -54,7 +57,8 @@ export class ZonesService {
     if (cached && cached.version === version) return cached.zones;
 
     const { rows } = await this.pool.query<ZoneRow>(
-      `SELECT z.id, z.name, z.name_he, l.stringency, ST_AsGeoJSON(z.geom) AS geojson
+      `SELECT z.id, z.name, z.name_he, l.stringency, z.city, z.street, z.description,
+              ST_AsGeoJSON(z.geom) AS geojson
          FROM zones z
          JOIN zone_layers l ON l.id = z.layer_id
         WHERE l.stringency = ANY($1::text[])
@@ -69,6 +73,9 @@ export class ZonesService {
         name: row.name,
         nameHe: row.name_he,
         stringency: row.stringency,
+        city: row.city,
+        street: row.street,
+        description: row.description,
       },
       geometry: JSON.parse(row.geojson),
     }));

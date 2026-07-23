@@ -44,6 +44,7 @@ export class RoutingController {
       language: body.language ?? 'he',
       engine: body.engine,
       avoidTolls: body.avoidTolls ?? false,
+      avoidDangerZones: body.avoidDangerZones ?? true,
       includeUnavoided: body.includeUnavoided ?? false,
     };
 

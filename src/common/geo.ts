@@ -16,10 +16,19 @@ import type {
   ZoneManeuverType,
 } from '@shared';
 
+/**
+ * A zone the router must avoid: a halachic stringency zone or a danger zone (Area A). The two
+ * share geometry and verification; the `danger` flag distinguishes them so the alert can say
+ * which it is. Stringency zones leave it undefined.
+ */
+export interface AvoidZone extends ZoneFeature {
+  danger?: boolean;
+}
+
 export interface VerificationResult {
   clean: boolean;
   /** Zones the geometry actually intersects. Empty when `clean` is true. */
-  offending: ZoneFeature[];
+  offending: AvoidZone[];
 }
 
 /**
@@ -28,7 +37,7 @@ export interface VerificationResult {
  */
 export function verifyRouteAgainstZones(
   geometry: GeoJsonLineString,
-  zones: ZoneFeature[],
+  zones: AvoidZone[],
 ): VerificationResult {
   if (geometry.coordinates.length < 2) {
     return { clean: false, offending: [] };
@@ -38,6 +47,122 @@ export function verifyRouteAgainstZones(
     booleanIntersects(line, turfPolygon(zone.geometry.coordinates)),
   );
   return { clean: offending.length === 0, offending };
+}
+
+/**
+ * Keeps only the zones whose bounding box falls within the origin-destination corridor.
+ *
+ * With hundreds of real zones spread across the country, a route between two points can only
+ * ever touch the handful near it; the rest are dead weight that would make the visibility-graph
+ * detour planner and the provider avoid list blow up. The corridor is the O-D bounding box
+ * expanded generously (by the full O-D span plus a floor), so any zone a returned route could
+ * plausibly reach is retained - a far-away zone cannot be crossed and is safe to drop.
+ */
+export function zonesNearCorridor<T extends AvoidZone>(
+  zones: T[],
+  origin: LatLng,
+  destination: LatLng,
+): T[] {
+  const spanLat = Math.abs(origin.lat - destination.lat);
+  const spanLng = Math.abs(origin.lng - destination.lng);
+  const margin = Math.max(spanLat, spanLng) + 0.05; // ~5.5 km floor
+
+  const minLat = Math.min(origin.lat, destination.lat) - margin;
+  const maxLat = Math.max(origin.lat, destination.lat) + margin;
+  const minLng = Math.min(origin.lng, destination.lng) - margin;
+  const maxLng = Math.max(origin.lng, destination.lng) + margin;
+
+  return zones.filter((zone) => {
+    const ring = zone.geometry.coordinates[0] ?? [];
+    let zMinLng = Infinity;
+    let zMinLat = Infinity;
+    let zMaxLng = -Infinity;
+    let zMaxLat = -Infinity;
+    for (const [lng, lat] of ring) {
+      if (lng < zMinLng) zMinLng = lng;
+      if (lng > zMaxLng) zMaxLng = lng;
+      if (lat < zMinLat) zMinLat = lat;
+      if (lat > zMaxLat) zMaxLat = lat;
+    }
+    // Bounding-box overlap test.
+    return !(zMaxLng < minLng || zMinLng > maxLng || zMaxLat < minLat || zMinLat > maxLat);
+  });
+}
+
+/**
+ * The `k` zones whose centre is closest to the straight origin-destination line.
+ *
+ * The visibility-graph detour planner is roughly cubic in the number of obstacle zones, so it
+ * is fed only the handful nearest the direct path - the ones that could actually block a
+ * near-direct route. This bounds the planner's cost; it never weakens safety, because the
+ * final route is still verified against the FULL corridor set, so a route that slips past a
+ * zone the planner ignored is rejected rather than returned.
+ */
+export function nearestZonesToSegment<T extends AvoidZone>(
+  zones: T[],
+  a: LatLng,
+  b: LatLng,
+  k: number,
+): T[] {
+  if (zones.length <= k) return zones;
+  const line = lineString([
+    [a.lng, a.lat],
+    [b.lng, b.lat],
+  ]);
+  const scored = zones.map((zone) => {
+    const ring = zone.geometry.coordinates[0] ?? [];
+    let sx = 0;
+    let sy = 0;
+    for (const [lng, lat] of ring) {
+      sx += lng;
+      sy += lat;
+    }
+    const n = ring.length || 1;
+    const d = pointToLineDistance(turfPoint([sx / n, sy / n]), line, {
+      units: 'kilometers',
+    });
+    return { zone, d };
+  });
+  scored.sort((p, q) => p.d - q.d);
+  return scored.slice(0, k).map((s) => s.zone);
+}
+
+/**
+ * Replaces a zone's polygon with its axis-aligned bounding box.
+ *
+ * The detour planner builds a graph node per obstacle vertex, so a real zone with thousands of
+ * vertices (some Area A polygons have over 3000) would explode the graph. The planner only
+ * needs a rough obstacle to route around, and a bounding box is both tiny (four corners) and
+ * conservative - it is larger than the zone, so a route planned clear of the box is clear of
+ * the zone. The returned route is still verified against the true polygon.
+ */
+export function toBoundingBoxZone(zone: AvoidZone): AvoidZone {
+  const ring = zone.geometry.coordinates[0] ?? [];
+  let minLng = Infinity;
+  let minLat = Infinity;
+  let maxLng = -Infinity;
+  let maxLat = -Infinity;
+  for (const [lng, lat] of ring) {
+    if (lng < minLng) minLng = lng;
+    if (lng > maxLng) maxLng = lng;
+    if (lat < minLat) minLat = lat;
+    if (lat > maxLat) maxLat = lat;
+  }
+  return {
+    ...zone,
+    geometry: {
+      type: 'Polygon',
+      coordinates: [
+        [
+          [minLng, minLat],
+          [maxLng, minLat],
+          [maxLng, maxLat],
+          [minLng, maxLat],
+          [minLng, minLat],
+        ],
+      ],
+    },
+  };
 }
 
 /** Same check as `verifyRouteAgainstZones`, for callers that only hold raw polygons. */
@@ -352,12 +477,12 @@ function ringAroundPolygon(polygon: GeoJsonPolygon): LatLng[] {
 export function annotateManeuversWithZones(
   geometry: GeoJsonLineString,
   maneuvers: DraftManeuver[],
-  zones: ZoneFeature[],
+  zones: AvoidZone[],
 ): DraftManeuver[] {
   const coordinates = geometry.coordinates;
   if (zones.length === 0 || coordinates.length < 2) return maneuvers;
 
-  const zoneAt = (lng: number, lat: number): ZoneFeature | undefined =>
+  const zoneAt = (lng: number, lat: number): AvoidZone | undefined =>
     zones.find((zone) =>
       booleanPointInPolygon(turfPoint([lng, lat]), turfPolygon(zone.geometry.coordinates)),
     );
@@ -365,7 +490,7 @@ export function annotateManeuversWithZones(
   // Sample index s maps to vertex index floor(s / 2): even = vertex, odd = following midpoint.
   const samples: {
     vertex: number;
-    zone: ZoneFeature | undefined;
+    zone: AvoidZone | undefined;
     lng: number;
     lat: number;
   }[] = [];
@@ -438,30 +563,36 @@ export function annotateManeuversWithZones(
   return entries.map((entry) => entry.maneuver);
 }
 
-export function toManeuverZone(zone: ZoneFeature): ManeuverZone {
+export function toManeuverZone(zone: AvoidZone): ManeuverZone {
   return {
     name: zone.properties.name,
     nameHe: zone.properties.nameHe,
     stringency: zone.properties.stringency,
+    description: zone.properties.description ?? null,
+    city: zone.properties.city ?? null,
+    ...(zone.danger ? { danger: true } : {}),
   };
 }
 
 /** The client renders these from `action` plus `zone`; `instruction` is a text fallback. */
 function zoneManeuver(
   action: ZoneManeuverType,
-  zone: ZoneFeature,
+  zone: AvoidZone,
   point: LatLng,
   geometryIndex: number,
 ): DraftManeuver {
-  const label = `${zone.properties.name} (${zone.properties.stringency})`;
+  const kind = zone.danger ? 'danger zone' : 'forbidden zone';
+  const label = `${zone.properties.name}${
+    zone.properties.city ? `, ${zone.properties.city}` : ''
+  }`;
   const instruction =
     action === 'zone_exit'
-      ? `Leaving forbidden zone: ${label}`
+      ? `Leaving ${kind}: ${label}`
       : action === 'zone_origin'
-        ? `The origin is inside a forbidden zone: ${label}`
+        ? `The origin is inside a ${kind}: ${label}`
         : action === 'zone_destination'
-          ? `The destination is inside a forbidden zone: ${label}`
-          : `From here on, forbidden zone: ${label}`;
+          ? `The destination is inside a ${kind}: ${label}`
+          : `From here on, ${kind}: ${label}`;
 
   return {
     instruction,
@@ -582,9 +713,9 @@ function projectOnSegment(
 /** The nearest zone to a live position, with its distance. Drives the driving alert. */
 export function nearestZone(
   position: LatLng,
-  zones: ZoneFeature[],
-): { zone: ZoneFeature; distanceMeters: number; inside: boolean } | null {
-  let best: { zone: ZoneFeature; distanceMeters: number; inside: boolean } | null = null;
+  zones: AvoidZone[],
+): { zone: AvoidZone; distanceMeters: number; inside: boolean } | null {
+  let best: { zone: AvoidZone; distanceMeters: number; inside: boolean } | null = null;
 
   for (const zone of zones) {
     const polygon = turfPolygon(zone.geometry.coordinates);

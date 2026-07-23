@@ -8,6 +8,7 @@ export const DEFAULT_PREFERENCES: UserPreferences = {
   stringency: 'basic',
   trafficAware: true,
   avoidTolls: false,
+  avoidDangerZones: true,
   voiceEnabled: true,
   voiceId: 'he-default',
   units: 'metric',
@@ -29,6 +30,7 @@ export function toPreferences(raw: unknown): UserPreferences {
     trafficAware: value.trafficAware ?? DEFAULT_PREFERENCES.trafficAware,
     // Missing on rows written before toll avoidance existed - default rather than error.
     avoidTolls: value.avoidTolls ?? DEFAULT_PREFERENCES.avoidTolls,
+    avoidDangerZones: value.avoidDangerZones ?? DEFAULT_PREFERENCES.avoidDangerZones,
     voiceEnabled: value.voiceEnabled ?? DEFAULT_PREFERENCES.voiceEnabled,
     voiceId: value.voiceId ?? DEFAULT_PREFERENCES.voiceId,
     units: 'metric',

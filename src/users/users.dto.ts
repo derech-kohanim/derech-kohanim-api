@@ -32,6 +32,11 @@ export class UpdatePreferencesDto {
   @IsBoolean()
   avoidTolls?: boolean;
 
+  @ApiPropertyOptional({ description: 'Avoid danger zones (Area A) by default' })
+  @IsOptional()
+  @IsBoolean()
+  avoidDangerZones?: boolean;
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsBoolean()

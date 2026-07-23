@@ -9,12 +9,16 @@ import {
   cumulativeDistances,
   planDetourWaypoints,
   PLANNER_CLEARANCES,
+  nearestZonesToSegment,
   suggestViaPoints,
+  toBoundingBoxZone,
   verifyRouteAgainstZones,
+  zonesNearCorridor,
 } from '../common/geo';
-import { maxDeviationMeters } from '../common/geo';
+import { maxDeviationMeters, type AvoidZone } from '../common/geo';
 import { collectVoiceKeys, finaliseManeuvers, type DraftManeuver } from '../common/maneuver';
 import { PrismaService } from '../db/prisma.service';
+import { DangerZonesService } from '../zones/danger-zones.service';
 import { ZonesService } from '../zones/zones.service';
 import { ProviderRegistry } from './providers/provider-registry';
 import type {
@@ -22,14 +26,7 @@ import type {
   ProviderRouteResponse,
   RoutingProvider,
 } from './providers/routing-provider';
-import type {
-  GeoJsonPolygon,
-  LatLng,
-  RoutePlan,
-  RouteRequest,
-  RouteResult,
-  ZoneFeature,
-} from '@shared';
+import type { GeoJsonPolygon, LatLng, RoutePlan, RouteRequest, RouteResult } from '@shared';
 
 /**
  * We evaluate a handful of candidate via points rather than one, because the geometrically
@@ -62,6 +59,13 @@ const WANTED_ALTERNATIVES = 6;
 const MAX_PLAN_ROUTES = 3;
 
 /**
+ * Most obstacle zones handed to the visibility-graph detour planner. The planner is roughly
+ * cubic in this count, so it is capped to the nearest few; the full corridor set still governs
+ * verification, so capping never lets an unclean route through.
+ */
+const MAX_PLANNER_ZONES = 12;
+
+/**
  * Two routes closer than this everywhere are the same corridor. Used to drop near-identical
  * alternatives so the plan offers genuinely different choices.
  */
@@ -79,6 +83,7 @@ export class RoutingService {
   constructor(
     private readonly registry: ProviderRegistry,
     private readonly zones: ZonesService,
+    private readonly dangerZones: DangerZonesService,
     private readonly prisma: PrismaService,
   ) {}
 
@@ -111,11 +116,26 @@ export class RoutingService {
   async computePlan(request: RouteRequest): Promise<RoutePlan> {
     const attempts: string[] = [];
     const provider = this.registry.get(request.engine);
-    const zones = await this.zones.getZones(request.stringency);
+    const stringencyZones = await this.zones.getZones(request.stringency);
+
+    // Danger zones (Area A) are avoided by default, on their own axis, in addition to the
+    // halachic stringency zones. Both share verification and annotation as AvoidZone.
+    const avoidDanger = request.avoidDangerZones !== false;
+    const dangerZones = avoidDanger ? await this.dangerZones.getAvoidZones() : [];
+
+    // Only zones near the origin-destination corridor can affect this route. With hundreds of
+    // real zones nationwide, filtering to the corridor is what keeps verification, the provider
+    // avoid list, and the detour planner fast and correct - a distant zone cannot be crossed.
+    const zones: AvoidZone[] = zonesNearCorridor(
+      [...stringencyZones, ...dangerZones],
+      request.origin,
+      request.destination,
+    );
     const polygons = zones.map((zone) => zone.geometry);
     attempts.push(
       `provider=${provider.name} nativeAvoidance=${provider.supportsNativeAvoidance} ` +
-        `zones=${zones.length} avoidTolls=${Boolean(request.avoidTolls)}`,
+        `stringencyZones=${stringencyZones.length} dangerZones=${dangerZones.length} ` +
+        `nearCorridor=${zones.length} avoidTolls=${Boolean(request.avoidTolls)}`,
     );
 
     // (0) Naive baseline with avoidance off. Powers the debug overlay, the detour ratio, and
@@ -175,10 +195,20 @@ export class RoutingService {
     // (2) If native avoidance produced nothing clean, run the heuristic detour search for one
     //     clean route. This is the guarantee path for engines that cannot block polygons.
     if (cleanRoutes.length === 0) {
+      // The planner is roughly cubic in obstacle vertex count, so it gets only the nearest few
+      // zones, each simplified to its bounding box. Verification inside the heuristic still uses
+      // the full corridor set, so this never lets an unclean route through.
+      const plannerZones = nearestZonesToSegment(
+        zones,
+        request.origin,
+        request.destination,
+        MAX_PLANNER_ZONES,
+      ).map(toBoundingBoxZone);
       const heuristic = await this.findCleanByHeuristic(
         request,
         provider,
         zones,
+        plannerZones,
         polygons,
         naive,
         attempts,
@@ -248,7 +278,8 @@ export class RoutingService {
   private async findCleanByHeuristic(
     request: RouteRequest,
     provider: RoutingProvider,
-    zones: ZoneFeature[],
+    zones: AvoidZone[],
+    plannerZones: AvoidZone[],
     polygons: GeoJsonPolygon[],
     naive: ProviderRouteResponse | null,
     attempts: string[],
@@ -257,12 +288,13 @@ export class RoutingService {
     const referenceDistance = naive?.distanceMeters ?? Number.POSITIVE_INFINITY;
 
     // Plan the whole detour first: one routing call through a chain of waypoints that threads
-    // between the zones. Clearance widens on each failure.
+    // between the zones. The obstacle graph uses only the nearest zones (bounded cost); the
+    // result is still verified against the full corridor set below.
     for (const [level, clearance] of PLANNER_CLEARANCES.entries()) {
       const planned = planDetourWaypoints(
         request.origin,
         request.destination,
-        zones,
+        plannerZones,
         8,
         clearance,
       );
@@ -298,7 +330,7 @@ export class RoutingService {
       naive?.geometry ?? { type: 'LineString', coordinates: [] },
       zones,
     ).offending;
-    const blocking: ZoneFeature[] = [...firstOffending];
+    const blocking: AvoidZone[] = [...firstOffending];
     const tried = new Set<string>();
     let budget =
       best && best.route.distanceMeters <= referenceDistance * ACCEPTABLE_DETOUR_RATIO
@@ -310,7 +342,7 @@ export class RoutingService {
         request.origin,
         request.destination,
         blocking,
-        zones,
+        plannerZones,
         budget,
       ).filter((via) => !tried.has(viaKey(via)));
 
@@ -427,7 +459,7 @@ export class RoutingService {
     };
   }
 
-  private endpointInsideZone(request: RouteRequest, zones: ZoneFeature[]): string | null {
+  private endpointInsideZone(request: RouteRequest, zones: AvoidZone[]): string | null {
     for (const [label, coord] of [
       ['origin', request.origin],
       ['destination', request.destination],
@@ -491,7 +523,7 @@ export class RoutingService {
     verifiedClean: boolean,
     reason: string | undefined,
     attempts: string[],
-    zones: ZoneFeature[],
+    zones: AvoidZone[],
     options: { label?: string } = {},
   ): RouteResult {
     const id = randomUUID();

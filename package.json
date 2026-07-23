@@ -9,6 +9,7 @@
     "start": "node dist/derech-kohanim-api/src/main.js",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "seed": "tsx src/seed/seed.ts",
+    "import:areas": "tsx scripts/import-areas.ts",
     "verify": "tsx scripts/verify.ts",
     "test": "tsx scripts/verify.ts",
     "prisma:generate": "prisma generate",

@@ -31,7 +31,8 @@ npm run dev               # Nest במצב watch
 | `npm run build` | בנייה ל-`dist/` |
 | `npm start` | הרצת הבנייה |
 | `npm run typecheck` | בדיקת טיפוסים בלבד |
-| `npm run seed` | טעינת אזורי הדגמה, מסמך תנאים, משתמש הדגמה וקטעי קול |
+| `npm run seed` | מסמך תנאים, משתמש הדגמה וקטעי קול (לא אזורים) |
+| `npm run import:areas -- <path>` | ייבוא נתוני האזורים האמיתיים והאזורים המסוכנים |
 | `npm run verify` (זהה ל-`npm test`) | מארז בדיקות ההימנעות ההלכתי, לכל מנוע זמין |
 | `npm run prisma:generate` | ייצור מחדש של Prisma Client |
 
@@ -105,7 +106,8 @@ demo@derech-kohanim.local / derech1234
 | GET | `/api/users/me/preferences` | שפה, ערכת נושא, רמת חומרה, תנועה, הימנעות מאגרה, קול |
 | PATCH | `/api/users/me/preferences` | עדכון חלקי של ההעדפות |
 
-ההעדפות כוללות `avoidTolls` (ברירת מחדל `false`), שמסתנכרן בין המכשירים. שורות שנכתבו לפני
+ההעדפות כוללות `avoidTolls` (ברירת מחדל `false`) ו-`avoidDangerZones` (ברירת מחדל `true`),
+שמסתנכרנים בין המכשירים. שורות שנכתבו לפני
 שהשדה נוסף מקבלות `false` כברירת מחדל ולא נכשלות, כי ההעדפות נשמרות כ-JSON.
 
 ### מקומות
@@ -144,14 +146,38 @@ demo@derech-kohanim.local / derech1234
 **Places API (New)**, ו-**Routes API**. שגיאת הרשאה מ-Places מדווחת כלשונה בלוג עם הקישור
 להפעלה, והשירות מנסה שוב מעצמו כמה דקות אחרי ההפעלה בלי צורך בהפעלה מחדש של השרת.
 
-### אזורים
+### אזורים ואזורים מסוכנים
 
 | שיטה | נתיב | תיאור |
 |------|------|--------|
-| GET | `/api/zones?stringency=basic&sinceVersion=N` | שכבות הפוליגונים |
+| GET | `/api/zones?stringency=basic&sinceVersion=N` | שכבות הפוליגונים ההלכתיות |
+| GET | `/api/danger-zones?sinceVersion=N` | אזורים מסוכנים (Area A), ציר נפרד |
 
-השכבות מצטברות: `taharat` כוללת את `basic`, ו-`machmirim` כוללת את שתיהן. התשובה נושאת
-`version`, וכאשר `sinceVersion` שווה או גדול ממנה מוחזר `304` ואין מה להוריד.
+שכבות החומרה מצטברות: `taharat` כוללת את `basic`, ו-`machmirim` כוללת את שתיהן. כל פוליגון
+נושא `name`, `city`, `street` ואת ה-`description` ההלכתי המלא. התשובה נושאת `version`, וכאשר
+`sinceVersion` שווה או גדול ממנה מוחזר `304`.
+
+**האזורים המסוכנים** (Oslo "Area A") הם ציר נפרד מרמת החומרה, בטבלה משלהם עם גרסה משלהם.
+`GET /api/danger-zones` מחזיר אותם עם `name`, `city` ו-`description`. הם נמנעים בניתוב כברירת
+מחדל (ראה `avoidDangerZones` להלן).
+
+#### ייבוא נתוני האזורים
+
+הנתונים האמיתיים מיובאים בפקודה אחת שמאפסת וטוענת:
+
+```bash
+npm run import:areas                 # ברירת מחדל: ../derech-kohanim-data/areas.json
+npm run import:areas -- <path>       # נתיב מפורש
+```
+
+הפקודה מסירה את ה-BOM, מנקה את הטבלאות `zones` ו-`danger_zones`, וטוענת מחדש: רמה `א` ->
+`basic`, `ב` -> `taharat`, `ג` -> `machmirim` לתוך `zones`, ורמה `A` -> `danger_zones`.
+הגיאומטריה מאומתת (טבעות פתוחות נסגרות, פוליגונים פסולים מדולגים ומדווחים). הגרסאות הן גיבוב
+תוכן, כך שהרצה חוזרת על אותם נתונים נותנת אותה תוצאה. מודפס סיכום עם מספרי הפוליגונים לכל שכבה.
+
+**אזורי הדגמה אינם נזרעים יותר בעלייה.** מסד נתונים טרי מכיל רק את הנתונים המיובאים; ריצת
+`npm run seed` או עלייה טרייה אינה יוצרת אזורי בני ברק להדגמה. מארז הבדיקות מחזיק פוליגוני
+בדיקה עצמאיים משלו ואינו נשען על נתונים במסד.
 
 ### ניתוב
 
@@ -160,7 +186,8 @@ demo@derech-kohanim.local / derech1234
 | POST | `/api/routes/compute` | חישוב מסלול |
 
 הגוף כולל `origin`, `destination`, `stringency`, `mode`, `trafficAware`, `language`,
-`engine` אופציונלי, וכן `avoidTolls` ו-`includeUnavoided`. התשובה היא `RoutePlan`:
+`engine` אופציונלי, וכן `avoidTolls`, `avoidDangerZones` ו-`includeUnavoided`. התשובה היא
+`RoutePlan`:
 
 ```
 RoutePlan {
@@ -176,6 +203,13 @@ RoutePlan {
 - **הימנעות מכבישי אגרה.** `avoidTolls: true` מועבר לספק (HERE `avoid[features]=tollRoad`,
   Google `routeModifiers.avoidTolls`, GraphHopper דרך ה-custom model), ומסומן ב-`avoidsTolls`
   בכל מסלול מוחזר. מרכיב יחד עם הימנעות האזורים והחלופות
+- **הימנעות מאזורים מסוכנים.** `avoidDangerZones` (ברירת מחדל `true` כשמושמט) גורם לניתוב
+  להימנע גם מפוליגוני האזורים המסוכנים, בנוסף לאזורי החומרה. האימות בשרת מתייחס למסלול הנוגע
+  באזור מסוכן כלא נקי. זהו ציר נפרד, וההודעות באזור נושאות `danger`, `description` ו-`city`
+- **סינון מרחבי.** מבין מאות אזורים בארץ, רק אלה שבפרוזדור המוצא-יעד יכולים להשפיע על מסלול,
+  ולכן הם מסוננים לפי תיבה תוחמת לפני העיבוד. מתכנן העקיפה מקבל תת-קבוצה מצומצמת שכל אזור בה
+  מוחלף בתיבה התוחמת שלו (פוליגונים אמיתיים מגיעים לאלפי קודקודים), אך האימות הסופי תמיד מול
+  הפוליגון האמיתי, כך שהסינון אינו פוגע בבטיחות
 - **המסלול הלא נמנע להשוואה.** כאשר `includeUnavoided: true` וההימנעות באמת שינתה את התוצאה
   (המסלול הרגיל חוצה אזור), מוחזר `unavoidedRoute`: המסלול הרגיל ללא הימנעות, תמיד
   `verifiedClean: false`, לתצוגה בלבד ולא לניווט
@@ -351,6 +385,7 @@ prisma/
     003_route_reports.sql  דיווחי נהגים על מסלול
     004_voice_clip_audio.sql  בתים ו-content-type למקטעים שנוצרו
     005_places_cache.sql   מטמון קצר לתוצאות Places
+    006_zone_data_and_danger.sql  city/street/description ב-zones + טבלת danger_zones
 src/
   auth/                  הרשמה, התחברות, Google, JWT, תנאים
   users/                 פרופיל והעדפות

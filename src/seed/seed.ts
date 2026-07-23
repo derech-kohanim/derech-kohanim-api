@@ -10,89 +10,21 @@ import { config } from '../config';
 import { runMigrations, waitForDatabase } from '../db/migrate';
 import { DEFAULT_PREFERENCES } from '../users/user.mapper';
 import { CLIP_CATALOGUE, SEED_VOICE_PACKS } from '../voice/clip-catalogue';
-import { DEMO_ZONES } from '../zones/seed/demo-zones';
 import { TERMS_DOCUMENTS, TERMS_VERSION } from './terms';
 
 const DEMO_PASSWORD = process.env.SEED_DEMO_PASSWORD ?? 'derech1234';
 
 /**
- * Idempotent seed: demo zones, the terms document, a demo user and the voice clip
- * catalogue. Safe to run repeatedly, and run automatically on boot when SEED_ON_BOOT is on.
+ * Idempotent seed: the terms document, a demo user and the voice clip catalogue. Safe to run
+ * repeatedly, and run automatically on boot when SEED_ON_BOOT is on.
+ *
+ * Zone data is NOT seeded here: the real halachic zones and danger zones come from
+ * `npm run import:areas`, so a fresh boot contains no demo zones.
  */
 export async function runSeed(prisma: PrismaClient, pool: Pool): Promise<void> {
-  await seedZones(pool);
   await seedTerms(prisma);
   await seedDemoUser(prisma);
   await seedVoice(prisma);
-}
-
-async function seedZones(pool: Pool): Promise<void> {
-  // Bumping the layer version tells every client to re-download, so it must only happen
-  // when the geometry actually changed - not on every boot.
-  const fingerprint = createHash('sha1')
-    .update(JSON.stringify(DEMO_ZONES))
-    .digest('hex');
-  const { rows } = await pool.query<{ name: string; stringency: string; geojson: string }>(
-    `SELECT z.name, l.stringency, ST_AsGeoJSON(z.geom) AS geojson
-       FROM zones z JOIN zone_layers l ON l.id = z.layer_id
-      WHERE z.source = 'seed'
-      ORDER BY z.id`,
-  );
-  const current = createHash('sha1')
-    .update(
-      JSON.stringify(
-        DEMO_ZONES.map((zone) => ({
-          name: zone.name,
-          stringency: zone.stringency,
-          geojson: JSON.stringify(zone.geometry),
-        })),
-      ),
-    )
-    .digest('hex');
-  const stored = createHash('sha1')
-    .update(
-      JSON.stringify(
-        rows.map((row) => ({
-          name: row.name,
-          stringency: row.stringency,
-          geojson: JSON.stringify(JSON.parse(row.geojson)),
-        })),
-      ),
-    )
-    .digest('hex');
-
-  if (rows.length > 0 && current === stored) {
-    console.log(`Demo zones already up to date (${fingerprint.slice(0, 8)})`);
-    return;
-  }
-
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query(`DELETE FROM zones WHERE source = 'seed'`);
-
-    for (const zone of DEMO_ZONES) {
-      await client.query(
-        `INSERT INTO zones (layer_id, name, name_he, source, geom)
-         VALUES (
-           (SELECT id FROM zone_layers WHERE stringency = $1),
-           $2, $3, 'seed',
-           ST_SetSRID(ST_GeomFromGeoJSON($4), 4326)
-         )`,
-        [zone.stringency, zone.name, zone.nameHe, JSON.stringify(zone.geometry)],
-      );
-    }
-
-    // Bumping the version is what tells a client there is something new to download.
-    await client.query('UPDATE zone_layers SET version = version + 1, updated_at = now()');
-    await client.query('COMMIT');
-    console.log(`Seeded ${DEMO_ZONES.length} demo zones`);
-  } catch (error) {
-    await client.query('ROLLBACK');
-    throw error;
-  } finally {
-    client.release();
-  }
 }
 
 async function seedTerms(prisma: PrismaClient): Promise<void> {

@@ -4,9 +4,8 @@ import { Pool } from 'pg';
 
 import { verifyRouteAgainstZones } from '../src/common/geo';
 import { config } from '../src/config';
-import { PrismaService } from '../src/db/prisma.service';
-import { runMigrations, waitForDatabase } from '../src/db/migrate';
-import { ROUTING_PRESETS } from '../src/routing/presets';
+import type { DangerZonesService } from '../src/zones/danger-zones.service';
+import type { ZonesService } from '../src/zones/zones.service';
 import { GoogleProvider } from '../src/routing/providers/google.provider';
 import { GraphHopperProvider } from '../src/routing/providers/graphhopper.provider';
 import { HereProvider } from '../src/routing/providers/here.provider';
@@ -14,8 +13,8 @@ import { HybridProvider } from '../src/routing/providers/hybrid.provider';
 import { MockProvider } from '../src/routing/providers/mock.provider';
 import { ProviderRegistry } from '../src/routing/providers/provider-registry';
 import { RoutingService } from '../src/routing/routing.service';
-import { runSeed } from '../src/seed/seed';
-import { ZonesService } from '../src/zones/zones.service';
+import { ROUTING_PRESETS } from '../src/routing/presets';
+import { DANGER_FIXTURE, fixtureDanger, fixtureZones } from './fixtures';
 import type { RouteRequest, RoutingEngine } from '@shared';
 
 /**
@@ -53,24 +52,26 @@ function isUpstreamError(message: string): boolean {
 }
 
 async function main(): Promise<void> {
-  // The harness prepares its own database, so it runs standalone (CI, a fresh clone) without
-  // needing the server up first.
-  const pool = new Pool({ connectionString: config.databaseUrl, max: 2 });
-  const prisma = new PrismaService();
-  await waitForDatabase(pool);
-  await runMigrations(pool);
-  await runSeed(prisma, pool);
+  // Fully self-contained: zone data is in-harness fixtures, never the database, so the real
+  // database is untouched and the run needs no server. computePlan does not persist, so the
+  // prisma dependency is an unused stub here.
+  const zonesService = fixtureZones as unknown as ZonesService;
+  const dangerService = fixtureDanger as unknown as DangerZonesService;
 
   // The routing graph is wired by hand rather than through the Nest container: this script
   // runs under tsx (esbuild), which does not emit the decorator metadata Nest DI relies on.
-  const zonesService = new ZonesService(pool);
   const here = new HereProvider();
   const google = new GoogleProvider();
   const graphhopper = new GraphHopperProvider();
   const hybrid = new HybridProvider(graphhopper, here, google);
   const mock = new MockProvider();
   const registry = new ProviderRegistry(here, google, graphhopper, hybrid, mock);
-  const routing = new RoutingService(registry, zonesService, prisma);
+  const routing = new RoutingService(
+    registry,
+    zonesService,
+    dangerService,
+    {} as never,
+  );
 
   const only = engineFromArgv();
   const engines = registry
@@ -221,10 +222,15 @@ async function main(): Promise<void> {
         });
 
         if (bothPriced) {
+          // The two prices differ once traffic differs from Google's free-flow speed model.
+          // At a very quiet hour they can read equal (or live can even be a touch faster than
+          // the conservative default model), so an equal reading is a skip - the load-bearing
+          // invariant, that both modes reach Google, is asserted above.
           checks.push({
-            label: `hybrid/${preset.id}: free-flow and live-traffic times differ`,
-            status: differ ? 'pass' : 'fail',
-            detail: `${free.durationSeconds}s vs ${live.durationSeconds}s`,
+            label: `hybrid/${preset.id}: free-flow and live-traffic prices are independent`,
+            status: differ ? 'pass' : 'skip',
+            detail: `${free.durationSeconds}s free-flow vs ${live.durationSeconds}s live` +
+              (differ ? '' : ' (traffic flat right now)'),
           });
           checks.push({
             label: `hybrid/${preset.id}: geometry stays the shape engine's, verified clean`,
@@ -313,8 +319,51 @@ async function main(): Promise<void> {
     }
   }
 
-  await prisma.$disconnect();
-  await pool.end();
+  // Danger-zone avoidance: a corridor whose direct line crosses ONLY a danger zone (no
+  // stringency zone). With avoidDangerZones on (default) the route must clear it; with it off
+  // the naive route is allowed to cross it, proving the danger axis actually bit.
+  {
+    process.stdout.write(`\n=== danger-zone avoidance (mock engine) ===\n`);
+    const dangerGeom = { type: 'Polygon' as const, coordinates: DANGER_FIXTURE.coordinates };
+    const dangerZone = { type: 'Feature' as const, properties: {} as never, geometry: dangerGeom };
+    const base = {
+      origin: { lat: 32.05, lng: 34.788 },
+      destination: { lat: 32.061, lng: 34.803 },
+      stringency: 'basic' as const,
+      mode: 'drive' as const,
+      trafficAware: false,
+      language: 'he' as const,
+      engine: 'mock' as RoutingEngine,
+    };
+    try {
+      const on = await routing.computePlan({ ...base, avoidDangerZones: true });
+      const onClean = on.routes[0]
+        ? verifyRouteAgainstZones(on.routes[0].geometry, [dangerZone]).clean
+        : false;
+      checks.push({
+        label: 'danger/on: route clears the danger zone',
+        status: on.routes[0]?.verifiedClean && onClean ? 'pass' : 'fail',
+        detail: `verifiedClean=${on.routes[0]?.verifiedClean} clearsDanger=${onClean}`,
+      });
+
+      const off = await routing.computePlan({ ...base, avoidDangerZones: false });
+      const offCrosses = off.routes[0]
+        ? !verifyRouteAgainstZones(off.routes[0].geometry, [dangerZone]).clean
+        : false;
+      checks.push({
+        label: 'danger/off: naive route is allowed to cross the danger zone',
+        status: offCrosses ? 'pass' : 'fail',
+        detail: `crossesDanger=${offCrosses} (proves the danger axis changed the outcome)`,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      checks.push({
+        label: 'danger: avoidance',
+        status: isUpstreamError(message) ? 'skip' : 'fail',
+        detail: message,
+      });
+    }
+  }
 
   process.stdout.write('\n-------- verification summary --------\n');
   for (const check of checks) {

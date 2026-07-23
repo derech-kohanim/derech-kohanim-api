@@ -53,6 +53,16 @@ export class RouteRequestDto {
   avoidTolls?: boolean;
 
   @ApiPropertyOptional({
+    default: true,
+    description:
+      'Also avoid danger zones (Area A), on their own axis. Defaults to true; set false to ' +
+      'route only around the halachic stringency zones.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  avoidDangerZones?: boolean;
+
+  @ApiPropertyOptional({
     default: false,
     description:
       'Also return the plain route with no zone avoidance, for comparison. Only filled when ' +

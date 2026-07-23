@@ -7,11 +7,14 @@ import {
   metersBetween,
   nearestZone,
   toManeuverZone,
+  zonesNearCorridor,
 } from '../common/geo';
 import { config } from '../config';
 import { PrismaService } from '../db/prisma.service';
 import { RoutingService } from '../routing/routing.service';
+import { DangerZonesService } from '../zones/danger-zones.service';
 import { ZonesService } from '../zones/zones.service';
+import type { AvoidZone } from '../common/geo';
 import type { CreateSessionDto, ProgressDto } from './navigation.dto';
 import type {
   NavigationProgressResponse,
@@ -19,7 +22,6 @@ import type {
   NavigationStatus,
   RouteRequest,
   RouteResult,
-  Stringency,
 } from '@shared';
 
 @Injectable()
@@ -30,6 +32,7 @@ export class NavigationService {
     private readonly prisma: PrismaService,
     private readonly routing: RoutingService,
     private readonly zones: ZonesService,
+    private readonly dangerZones: DangerZonesService,
   ) {}
 
   async create(userId: string | null, input: CreateSessionDto): Promise<NavigationSession> {
@@ -175,7 +178,7 @@ export class NavigationService {
       distanceRemainingMeters: distanceRemaining,
       durationRemainingSeconds: durationRemaining,
       ...(rerouted ? { route: rerouted } : {}),
-      ...(await this.zoneAlert(position, request.stringency)),
+      ...(await this.zoneAlert(position, request)),
     };
   }
 
@@ -210,12 +213,25 @@ export class NavigationService {
     return result;
   }
 
-  /** Early warning, not an after the fact notice (spec section 17.4). */
+  /**
+   * Early warning, not an after the fact notice (spec section 17.4). Considers the halachic
+   * stringency zones and, when the route avoids them, the danger zones too, so the alert can
+   * say which it is. The alert zone carries the description and city for the client to show.
+   */
   private async zoneAlert(
     position: { lat: number; lng: number },
-    stringency: Stringency,
+    request: RouteRequest,
   ): Promise<Pick<NavigationProgressResponse, 'zoneAlert'>> {
-    const zones = await this.zones.getZones(stringency);
+    const stringencyZones = await this.zones.getZones(request.stringency);
+    const dangerZones =
+      request.avoidDangerZones !== false ? await this.dangerZones.getAvoidZones() : [];
+    // Only zones around the live position can trigger an alert; drop the rest for speed.
+    const zones: AvoidZone[] = zonesNearCorridor(
+      [...stringencyZones, ...dangerZones],
+      position,
+      position,
+    );
+
     const nearest = nearestZone(position, zones);
     if (!nearest) return {};
     if (!nearest.inside && nearest.distanceMeters > config.zoneAlertRadiusMeters) return {};

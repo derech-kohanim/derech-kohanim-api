@@ -4,20 +4,25 @@ import type { Response } from 'express';
 
 import { AppException } from '../common/app-exception';
 import { STRINGENCY_VALUES } from '../common/dto';
+import { DangerZonesService } from './danger-zones.service';
 import { ZonesService } from './zones.service';
-import type { Stringency, ZoneCollection } from '@shared';
+import type { DangerZoneCollection, Stringency, ZoneCollection } from '@shared';
 
 @ApiTags('zones')
-@Controller('api/zones')
+@Controller('api')
 export class ZonesController {
-  constructor(private readonly zones: ZonesService) {}
+  constructor(
+    private readonly zones: ZonesService,
+    private readonly dangerZones: DangerZonesService,
+  ) {}
 
-  @Get()
+  @Get('zones')
   @ApiOperation({
     summary: 'Forbidden zone layers for a stringency level',
     description:
-      'Layers are cumulative: taharat includes basic, machmirim includes both. ' +
-      'Pass sinceVersion to get 304 when nothing changed.',
+      'Layers are cumulative: taharat includes basic, machmirim includes both. Each feature ' +
+      'carries name, city, street and the full halachic description. Pass sinceVersion to get ' +
+      '304 when nothing changed.',
   })
   @ApiQuery({ name: 'stringency', enum: STRINGENCY_VALUES, required: false })
   @ApiQuery({ name: 'sinceVersion', type: Number, required: false })
@@ -36,6 +41,27 @@ export class ZonesController {
 
     const collection = await this.zones.getCollection(stringency as Stringency);
 
+    if (sinceVersion !== undefined && Number(sinceVersion) >= collection.version) {
+      response.status(304);
+      return undefined;
+    }
+    return collection;
+  }
+
+  @Get('danger-zones')
+  @ApiOperation({
+    summary: 'Danger zones (Oslo Area A), a separate axis from halachic stringency',
+    description:
+      'Each feature carries name, city and description. Pass sinceVersion to get 304 when ' +
+      'nothing changed. Avoided by routing when avoidDangerZones is on (the default).',
+  })
+  @ApiQuery({ name: 'sinceVersion', type: Number, required: false })
+  @ApiOkResponse({ description: 'GeoJSON FeatureCollection with a version' })
+  async getDangerZones(
+    @Res({ passthrough: true }) response: Response,
+    @Query('sinceVersion') sinceVersion?: string,
+  ): Promise<DangerZoneCollection | undefined> {
+    const collection = await this.dangerZones.getCollection();
     if (sinceVersion !== undefined && Number(sinceVersion) >= collection.version) {
       response.status(304);
       return undefined;
