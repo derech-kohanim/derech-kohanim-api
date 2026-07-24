@@ -31,8 +31,9 @@ npm run dev               # Nest במצב watch
 | `npm run build` | בנייה ל-`dist/` |
 | `npm start` | הרצת הבנייה |
 | `npm run typecheck` | בדיקת טיפוסים בלבד |
-| `npm run seed` | מסמך תנאים, משתמש הדגמה וקטעי קול (לא אזורים) |
-| `npm run import:areas -- <path>` | ייבוא נתוני האזורים האמיתיים והאזורים המסוכנים |
+| `npm run seed` | מסמך תנאים, משתמש הדגמה וקטעי קול (לא אזורים). מריץ מ-`dist` |
+| `npm run import:areas -- <path>` | ייבוא נתוני האזורים והאזורים המסוכנים. מריץ מ-`dist` |
+| `npm run seed:dev` / `npm run import:areas:dev` | אותו דבר דרך `tsx`, לפיתוח ללא בנייה |
 | `npm run verify` (זהה ל-`npm test`) | מארז בדיקות ההימנעות ההלכתי, לכל מנוע זמין |
 | `npm run prisma:generate` | ייצור מחדש של Prisma Client |
 
@@ -166,9 +167,19 @@ demo@derech-kohanim.local / derech1234
 הנתונים האמיתיים מיובאים בפקודה אחת שמאפסת וטוענת:
 
 ```bash
-npm run import:areas                 # ברירת מחדל: ../derech-kohanim-data/areas.json
-npm run import:areas -- <path>       # נתיב מפורש
+# ייצור, בתוך תמונת הדוקר (מריץ JS מקומפל מ-dist, ללא tsx או קוד מקור):
+docker compose exec api npm run import:areas -- /data/areas.json
+
+# פיתוח, ללא בנייה מוקדמת:
+npm run import:areas:dev                    # ברירת מחדל: ../derech-kohanim-data/areas.json
+npm run import:areas:dev -- <path>          # נתיב מפורש
 ```
+
+בייצור, `npm run import:areas` ו-`npm run seed` מריצים `node dist/...`. הסקריפטים מקומפלים
+לתוך `dist` בזמן `nest build`, וכל הייבוא מ-`@shared` הוא `import type` בלבד ולכן נמחק
+בקימפול, כך שאין תלות בזמן ריצה בקוד המקור, ב-tsx או בפתרון נתיבי tsconfig. בפיתוח משתמשים
+בגרסאות ה-`:dev` שמריצות דרך `tsx` ללא בנייה. בדוקר ה-compose של הפריסה מרכיב את מאגר הנתונים
+לקריאה בלבד תחת `/data`.
 
 הפקודה מסירה את ה-BOM, מנקה את הטבלאות `zones` ו-`danger_zones`, וטוענת מחדש: רמה `א` ->
 `basic`, `ב` -> `taharat`, `ג` -> `machmirim` לתוך `zones`, ורמה `A` -> `danger_zones`.
