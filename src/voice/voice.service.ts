@@ -1,5 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 
+import type {
+  AdminPregenerateSummary,
+  AdminVoiceClip,
+  AdminVoicePack,
+} from '../admin/admin.types';
 import { AppException } from '../common/app-exception';
 import { config } from '../config';
 import { PrismaService } from '../db/prisma.service';
@@ -194,11 +199,14 @@ export class VoiceService {
     }
   }
 
-  private async pregeneratePack(language: Language, voiceId: string): Promise<void> {
+  private async pregeneratePack(
+    language: Language,
+    voiceId: string,
+  ): Promise<AdminPregenerateSummary> {
     const pack = await this.findPack(language, voiceId);
     if (!pack) {
       this.logger.warn(`No voice pack for ${language}/${voiceId}; skipping pre-generation`);
-      return;
+      return { generated: 0, skipped: 0, failed: 0 };
     }
 
     const existing = await this.prisma.voiceClip.findMany({ where: { packId: pack.id } });
@@ -208,14 +216,22 @@ export class VoiceService {
     );
 
     let generatedCount = 0;
+    let skippedCount = 0;
+    let failedCount = 0;
     for (const entry of CLIP_CATALOGUE) {
-      if (hasAudio.has(entry.key)) continue;
+      if (hasAudio.has(entry.key)) {
+        skippedCount += 1;
+        continue;
+      }
 
       const text = entry.text[language];
       const generated = await this.tts
         .generate(entry.key, text, language, voiceId)
         .catch(() => null);
-      if (!generated) continue;
+      if (!generated) {
+        failedCount += 1;
+        continue;
+      }
 
       await this.prisma.voiceClip.upsert({
         where: { packId_clipKey: { packId: pack.id, clipKey: entry.key } },
@@ -255,6 +271,8 @@ export class VoiceService {
     } else {
       this.logger.log(`Voice pack ${pack.id} already complete; nothing to pre-generate`);
     }
+
+    return { generated: generatedCount, skipped: skippedCount, failed: failedCount };
   }
 
   async listPacks(): Promise<{ id: string; language: Language; voiceId: string; version: number }[]> {
@@ -277,6 +295,172 @@ export class VoiceService {
     return {
       audio: Buffer.from(clip.audio),
       contentType: clip.contentType ?? 'audio/ogg',
+    };
+  }
+
+  // --- Admin console (/api/admin/voice) --------------------------------------------------
+
+  /** Every pack with per-pack clip counts and audio byte totals, for the admin overview. */
+  async adminListPacks(): Promise<AdminVoicePack[]> {
+    const rows = await this.prisma.$queryRaw<
+      {
+        id: string;
+        language: string;
+        voice_id: string;
+        version: number;
+        updated_at: Date;
+        clip_count: number;
+        with_audio: number;
+        total_bytes: bigint;
+      }[]
+    >`
+      SELECT p.id, p.language, p.voice_id, p.version, p.updated_at,
+             count(c.id)::int AS clip_count,
+             count(c.audio)::int AS with_audio,
+             coalesce(sum(octet_length(c.audio)), 0)::bigint AS total_bytes
+        FROM voice_packs p
+        LEFT JOIN voice_clips c ON c.pack_id = p.id
+       GROUP BY p.id
+       ORDER BY p.id`;
+
+    return rows.map((row) => ({
+      id: row.id,
+      language: row.language,
+      voiceId: row.voice_id,
+      version: row.version,
+      clipCount: row.clip_count,
+      withAudio: row.with_audio,
+      missingAudio: row.clip_count - row.with_audio,
+      totalBytes: Number(row.total_bytes),
+      updatedAt: row.updated_at.toISOString(),
+    }));
+  }
+
+  /** Clips of one pack with audio presence and byte size, for the admin clip table. */
+  async adminListClips(packId: string): Promise<AdminVoiceClip[]> {
+    const pack = await this.prisma.voicePack.findUnique({ where: { id: packId } });
+    if (!pack) throw AppException.notFound('voice_pack_not_found', 'No such voice pack');
+
+    const rows = await this.prisma.$queryRaw<
+      {
+        id: string;
+        clip_key: string;
+        role: string;
+        text: string;
+        source: string;
+        hash: string;
+        duration_ms: number;
+        content_type: string | null;
+        has_audio: boolean;
+        size_bytes: number;
+      }[]
+    >`
+      SELECT id, clip_key, role, text, source, hash, duration_ms, content_type,
+             (audio IS NOT NULL) AS has_audio,
+             coalesce(octet_length(audio), 0)::int AS size_bytes
+        FROM voice_clips
+       WHERE pack_id = ${packId}
+       ORDER BY clip_key`;
+
+    return rows.map((row) => this.toAdminClip(row));
+  }
+
+  /** Regenerates one clip's audio via the TTS backend and returns the updated clip. */
+  async regenerateClip(clipId: string): Promise<AdminVoiceClip> {
+    const clip = await this.prisma.voiceClip.findUnique({
+      where: { id: clipId },
+      include: { pack: true },
+    });
+    if (!clip) throw AppException.notFound('clip_not_found', 'No such voice clip');
+    if (!this.tts.available) {
+      throw AppException.badGateway(
+        'tts_unavailable',
+        'No TTS backend is configured, so audio cannot be generated',
+      );
+    }
+
+    const generated = await this.tts
+      .generate(clip.clipKey, clip.text, clip.pack.language as Language, clip.pack.voiceId)
+      .catch(() => null);
+    if (!generated) {
+      throw AppException.badGateway('tts_failed', `Could not generate audio for ${clip.clipKey}`);
+    }
+
+    const saved = await this.prisma.voiceClip.update({
+      where: { id: clip.id },
+      data: {
+        audioPath: generated.audioPath,
+        source: 'generated',
+        durationMs: generated.durationMs,
+        hash: generated.hash,
+        audio: new Uint8Array(generated.audio),
+        contentType: generated.contentType,
+      },
+    });
+    // A regenerated clip changes the pack, so bump the version to trigger a client re-sync.
+    await this.prisma.voicePack.update({
+      where: { id: clip.packId },
+      data: { version: { increment: 1 }, updatedAt: new Date() },
+    });
+
+    return this.toAdminClip({
+      id: saved.id,
+      clip_key: saved.clipKey,
+      role: saved.role,
+      text: saved.text,
+      source: saved.source,
+      hash: saved.hash,
+      duration_ms: saved.durationMs,
+      content_type: saved.contentType,
+      has_audio: Boolean(saved.audio),
+      size_bytes: saved.audio ? saved.audio.length : 0,
+    });
+  }
+
+  /** Generates every missing clip in a pack, returning how many were made/skipped/failed. */
+  async adminPregeneratePack(packId: string): Promise<AdminPregenerateSummary> {
+    const pack = await this.prisma.voicePack.findUnique({ where: { id: packId } });
+    if (!pack) throw AppException.notFound('voice_pack_not_found', 'No such voice pack');
+    return this.pregeneratePack(pack.language as Language, pack.voiceId);
+  }
+
+  /** Removes a clip entirely (row and its audio), bumping the pack version. */
+  async deleteClip(clipId: string): Promise<{ ok: true }> {
+    const clip = await this.prisma.voiceClip.findUnique({ where: { id: clipId } });
+    if (!clip) throw AppException.notFound('clip_not_found', 'No such voice clip');
+
+    await this.prisma.voiceClip.delete({ where: { id: clipId } });
+    await this.prisma.voicePack.update({
+      where: { id: clip.packId },
+      data: { version: { increment: 1 }, updatedAt: new Date() },
+    });
+    return { ok: true };
+  }
+
+  private toAdminClip(row: {
+    id: string;
+    clip_key: string;
+    role: string;
+    text: string;
+    source: string;
+    hash: string;
+    duration_ms: number;
+    content_type: string | null;
+    has_audio: boolean;
+    size_bytes: number;
+  }): AdminVoiceClip {
+    return {
+      id: row.id,
+      key: row.clip_key,
+      role: row.role,
+      text: row.text,
+      source: row.source,
+      hash: row.hash,
+      durationMs: row.duration_ms,
+      hasAudio: row.has_audio,
+      sizeBytes: row.size_bytes,
+      contentType: row.content_type,
+      url: `${config.voiceBaseUrl}/${row.id}`,
     };
   }
 }

@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 
+import { AdminModule } from './admin/admin.module';
 import { AuthModule } from './auth/auth.module';
 import { DbModule } from './db/db.module';
 import { EventsModule } from './events/events.module';
@@ -22,6 +23,7 @@ import { ZonesModule } from './zones/zones.module';
     VoiceModule,
     NavigationModule,
     EventsModule,
+    AdminModule,
   ],
   controllers: [HealthController],
 })
