@@ -20,6 +20,17 @@ export const config = {
   /** Comma separated list, or "*" for any origin during development. */
   corsOrigins: (process.env.CORS_ORIGINS ?? '*').split(',').map((o) => o.trim()),
 
+  /**
+   * Emails allowed into the admin console (/api/admin), comma separated. Matched
+   * case-insensitively against the signed-in user's Google email. Empty means no admins.
+   */
+  adminEmails: (process.env.ADMIN_EMAILS ?? '')
+    .split(',')
+    .map((email) => email.trim().toLowerCase())
+    .filter(Boolean),
+  /** Origin the admin console is served from, added to the CORS allow-list when set. */
+  adminOrigin: process.env.ADMIN_ORIGIN ?? '',
+
   jwtSecret: process.env.JWT_SECRET ?? 'dev-only-insecure-secret-change-me',
   accessTokenTtlSeconds: num(process.env.ACCESS_TOKEN_TTL_SECONDS, 900),
   refreshTokenTtlDays: num(process.env.REFRESH_TOKEN_TTL_DAYS, 30),

@@ -61,8 +61,13 @@ async function bootstrap(): Promise<void> {
     }),
   );
   app.useGlobalFilters(new ApiErrorFilter());
+  // The admin console is served from its own origin; add it alongside the existing ones. A
+  // wildcard already allows it, so the admin origin only needs adding to an explicit list.
+  const corsOrigins = config.corsOrigins.includes('*')
+    ? true
+    : [...new Set([...config.corsOrigins, ...(config.adminOrigin ? [config.adminOrigin] : [])])];
   app.enableCors({
-    origin: config.corsOrigins.includes('*') ? true : config.corsOrigins,
+    origin: corsOrigins,
     credentials: true,
   });
   app.enableShutdownHooks();
