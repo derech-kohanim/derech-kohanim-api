@@ -18,7 +18,7 @@ import type {
 export class EventsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  /** The full feed for a route: seeded zones and traffic, then any user reports. */
+  /** The full feed for a route: derived zone events, then any real user reports. */
   async getBundle(routeId: string): Promise<RouteEventBundle> {
     const route = await this.loadRoute(routeId);
     const seeded = buildSeededBundle(route.geometry, route.maneuvers);
