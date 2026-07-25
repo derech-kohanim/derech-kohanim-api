@@ -207,6 +207,36 @@ model NavSession {
   @@map("nav_sessions")
 }
 
+// Per-compute timing/debug telemetry for POST /api/routes/compute. Created out of band from an
+// interceptor + RoutingService, never on the route's return path, so recording cannot slow or
+// break a compute. The PostGIS geometry itself is not stored here; route_id points at the
+// stored Route (request + result + debug) when a fuller payload is needed.
+model RouteComputeStat {
+  id               String   @id @default(uuid())
+  createdAt        DateTime @default(now()) @map("created_at")
+  provider         String
+  engine           String
+  computeMs        Int      @map("compute_ms")
+  handlingMs       Int      @map("handling_ms")
+  alternativeCount Int      @default(0) @map("alternative_count")
+  verifiedClean    Boolean  @default(false) @map("verified_clean")
+  stringency       String
+  mode             String
+  originLat        Float    @map("origin_lat")
+  originLng        Float    @map("origin_lng")
+  destLat          Float    @map("dest_lat")
+  destLng          Float    @map("dest_lng")
+  distanceMeters   Int?     @map("distance_meters")
+  durationSeconds  Int?     @map("duration_seconds")
+  avoidDangerZones Boolean  @default(true) @map("avoid_danger_zones")
+  avoidTolls       Boolean  @default(false) @map("avoid_tolls")
+  routeId          String?  @map("route_id")
+  userId           String?  @map("user_id")
+
+  @@index([createdAt])
+  @@map("route_compute_stats")
+}
+
 model VoicePack {
   id        String   @id
   language  String

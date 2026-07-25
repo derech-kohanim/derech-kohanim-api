@@ -21,6 +21,7 @@ import { PrismaService } from '../db/prisma.service';
 import { DangerZonesService } from '../zones/danger-zones.service';
 import { ZonesService } from '../zones/zones.service';
 import { ProviderRegistry } from './providers/provider-registry';
+import { RouteComputeStatsService } from './route-compute-stats.service';
 import type {
   ProviderRouteRequest,
   ProviderRouteResponse,
@@ -85,6 +86,7 @@ export class RoutingService {
     private readonly zones: ZonesService,
     private readonly dangerZones: DangerZonesService,
     private readonly prisma: PrismaService,
+    private readonly stats: RouteComputeStatsService,
   ) {}
 
   /**
@@ -92,7 +94,33 @@ export class RoutingService {
    * a chosen route (or the reroute default) by id.
    */
   async computeAndStorePlan(request: RouteRequest, userId: string | null): Promise<RoutePlan> {
+    // Time only the route computation itself (provider calls + verification), not the storage
+    // loop. Recording is best-effort and only lands a row under the compute interceptor.
+    const startedAt = Date.now();
     const plan = await this.computePlan(request);
+    const computeMs = Date.now() - startedAt;
+
+    const best = plan.routes[0];
+    this.stats.record({
+      provider: best?.engine ?? request.engine ?? 'unknown',
+      engine: request.engine ?? best?.engine ?? 'default',
+      computeMs,
+      alternativeCount: plan.routes.length,
+      verifiedClean: best?.verifiedClean ?? false,
+      stringency: request.stringency,
+      mode: request.mode,
+      originLat: request.origin.lat,
+      originLng: request.origin.lng,
+      destLat: request.destination.lat,
+      destLng: request.destination.lng,
+      distanceMeters: best?.distanceMeters ?? null,
+      durationSeconds: best?.durationSeconds ?? null,
+      avoidDangerZones: request.avoidDangerZones !== false,
+      avoidTolls: request.avoidTolls ?? false,
+      routeId: best?.id ?? null,
+      userId,
+    });
+
     const toStore = [...plan.routes, ...(plan.unavoidedRoute ? [plan.unavoidedRoute] : [])];
     for (const route of toStore) {
       await this.prisma.route.create({

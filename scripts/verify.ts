@@ -71,6 +71,8 @@ async function main(): Promise<void> {
     zonesService,
     dangerService,
     {} as never,
+    // computePlan does not touch compute-stats (only computeAndStorePlan does), so a stub is safe.
+    {} as never,
   );
 
   const only = engineFromArgv();

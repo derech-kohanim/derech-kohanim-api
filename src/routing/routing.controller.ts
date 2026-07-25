@@ -1,9 +1,18 @@
-import { Body, Controller, Get, HttpCode, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  Post,
+  UseGuards,
+  UseInterceptors,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 
 import { CurrentUserId, OptionalAuthGuard } from '../auth/auth.guard';
 import { AppException } from '../common/app-exception';
 import { ProviderRegistry } from './providers/provider-registry';
+import { RouteComputeTimingInterceptor } from './route-compute-timing.interceptor';
 import { RouteRequestDto } from './routing.dto';
 import { RoutingService } from './routing.service';
 import type { ProviderInfo, RoutePlan, RouteRequest } from '@shared';
@@ -19,6 +28,7 @@ export class RoutingController {
   @Post('routes/compute')
   @HttpCode(200)
   @UseGuards(OptionalAuthGuard)
+  @UseInterceptors(RouteComputeTimingInterceptor)
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Compute a plan of zone-avoiding routes',
