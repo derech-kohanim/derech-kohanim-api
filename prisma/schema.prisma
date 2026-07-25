@@ -30,6 +30,7 @@ model User {
   navSessions   NavSession[]
   routes        Route[]
   reports       RouteReport[]
+  navFeedback   NavFeedback[]
 
   @@map("users")
 }
@@ -143,6 +144,7 @@ model Route {
   user        User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
   navSessions NavSession[]
   reports     RouteReport[]
+  navFeedback NavFeedback[]
 
   @@index([userId])
   @@map("routes")
@@ -163,6 +165,23 @@ model RouteReport {
 
   @@index([routeId])
   @@map("route_reports")
+}
+
+// End-of-trip feedback: a good/bad rating for a completed route, with optional free text on a
+// 'bad' rating. Guests may submit anonymously, so userId is nullable.
+model NavFeedback {
+  id        String   @id @default(uuid())
+  routeId   String   @map("route_id")
+  userId    String?  @map("user_id")
+  rating    String
+  text      String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  route Route @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  user  User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([routeId])
+  @@map("nav_feedback")
 }
 
 model NavSession {

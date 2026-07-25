@@ -15,8 +15,9 @@ import { RoutingService } from '../routing/routing.service';
 import { DangerZonesService } from '../zones/danger-zones.service';
 import { ZonesService } from '../zones/zones.service';
 import type { AvoidZone } from '../common/geo';
-import type { CreateSessionDto, ProgressDto } from './navigation.dto';
+import type { CreateSessionDto, NavFeedbackDto, ProgressDto } from './navigation.dto';
 import type {
+  NavFeedback,
   NavigationProgressResponse,
   NavigationSession,
   NavigationStatus,
@@ -179,6 +180,37 @@ export class NavigationService {
       durationRemainingSeconds: durationRemaining,
       ...(rerouted ? { route: rerouted } : {}),
       ...(await this.zoneAlert(position, request)),
+    };
+  }
+
+  /**
+   * Records end-of-trip feedback for a route. Guests may submit anonymously (userId null); a
+   * signed-in driver's feedback is associated with their account.
+   */
+  async createFeedback(
+    userId: string | null,
+    input: NavFeedbackDto,
+  ): Promise<NavFeedback> {
+    const route = await this.prisma.route.findUnique({ where: { id: input.routeId } });
+    if (!route) {
+      throw AppException.notFound('route_not_found', 'No such route to leave feedback on');
+    }
+
+    const feedback = await this.prisma.navFeedback.create({
+      data: {
+        routeId: input.routeId,
+        userId,
+        rating: input.rating,
+        text: input.text ?? null,
+      },
+    });
+
+    return {
+      id: feedback.id,
+      routeId: feedback.routeId,
+      rating: feedback.rating as NavFeedback['rating'],
+      text: feedback.text,
+      createdAt: feedback.createdAt.toISOString(),
     };
   }
 
