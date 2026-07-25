@@ -3,7 +3,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { AppException } from '../common/app-exception';
 import { config } from '../config';
 import { PrismaService } from '../db/prisma.service';
-import { CLIP_CATALOGUE } from './clip-catalogue';
+import { CLIP_CATALOGUE, SEED_VOICE_PACKS } from './clip-catalogue';
 import { TtsService } from './tts.service';
 import type {
   Language,
@@ -165,6 +165,96 @@ export class VoiceService {
     }
 
     return { clips, missing };
+  }
+
+  /**
+   * Generates and stores audio for every closed-catalogue clip in the global packs
+   * (he-default, en-default), so a device can download a complete pack instead of triggering
+   * on-demand generation mid-navigation.
+   *
+   * Idempotent: clips that already carry audio bytes are skipped, so re-running on every boot
+   * does no work once a pack is complete. Never blocks or fails boot - if the TTS backend is
+   * unavailable, or a single clip fails, it is logged and left for on-demand resolve, in line
+   * with the "voice never blocks navigation" contract.
+   */
+  async pregenerateGlobalPacks(): Promise<void> {
+    if (!this.tts.available) {
+      this.logger.log('TTS backend unavailable; skipping voice pack pre-generation');
+      return;
+    }
+
+    for (const seed of SEED_VOICE_PACKS) {
+      try {
+        await this.pregeneratePack(seed.language, seed.voiceId);
+      } catch (error) {
+        this.logger.warn(
+          `Voice pack pre-generation failed for ${seed.id}: ${(error as Error).message}`,
+        );
+      }
+    }
+  }
+
+  private async pregeneratePack(language: Language, voiceId: string): Promise<void> {
+    const pack = await this.findPack(language, voiceId);
+    if (!pack) {
+      this.logger.warn(`No voice pack for ${language}/${voiceId}; skipping pre-generation`);
+      return;
+    }
+
+    const existing = await this.prisma.voiceClip.findMany({ where: { packId: pack.id } });
+    // Only bytes count as "generated": a seeded recorded row without audio is a placeholder.
+    const hasAudio = new Set(
+      existing.filter((clip) => clip.audio).map((clip) => clip.clipKey),
+    );
+
+    let generatedCount = 0;
+    for (const entry of CLIP_CATALOGUE) {
+      if (hasAudio.has(entry.key)) continue;
+
+      const text = entry.text[language];
+      const generated = await this.tts
+        .generate(entry.key, text, language, voiceId)
+        .catch(() => null);
+      if (!generated) continue;
+
+      await this.prisma.voiceClip.upsert({
+        where: { packId_clipKey: { packId: pack.id, clipKey: entry.key } },
+        create: {
+          packId: pack.id,
+          clipKey: entry.key,
+          role: entry.role,
+          text,
+          audioPath: generated.audioPath,
+          source: 'generated',
+          durationMs: generated.durationMs,
+          hash: generated.hash,
+          audio: new Uint8Array(generated.audio),
+          contentType: generated.contentType,
+        },
+        update: {
+          audioPath: generated.audioPath,
+          source: 'generated',
+          durationMs: generated.durationMs,
+          hash: generated.hash,
+          audio: new Uint8Array(generated.audio),
+          contentType: generated.contentType,
+        },
+      });
+      generatedCount += 1;
+    }
+
+    if (generatedCount > 0) {
+      // One version bump per pack that gained audio, so devices know to re-sync.
+      await this.prisma.voicePack.update({
+        where: { id: pack.id },
+        data: { version: { increment: 1 }, updatedAt: new Date() },
+      });
+      this.logger.log(
+        `Pre-generated ${generatedCount} clip(s) for voice pack ${pack.id}; version bumped`,
+      );
+    } else {
+      this.logger.log(`Voice pack ${pack.id} already complete; nothing to pre-generate`);
+    }
   }
 
   async listPacks(): Promise<{ id: string; language: Language; voiceId: string; version: number }[]> {

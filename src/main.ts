@@ -12,6 +12,7 @@ import { ApiErrorFilter } from './common/api-error.filter';
 import { config } from './config';
 import { runMigrations, waitForDatabase } from './db/migrate';
 import { runSeed } from './seed/seed';
+import { VoiceService } from './voice/voice.service';
 
 /**
  * Migrations and seed run before the app is created, so a cold `docker compose up db`
@@ -39,6 +40,18 @@ async function bootstrap(): Promise<void> {
   await prepareDatabase();
 
   const app = await NestFactory.create(AppModule);
+
+  // Pre-generate the whole global voice pack once, so devices can download a complete pack
+  // instead of triggering on-demand generation mid-navigation. Idempotent (skips clips that
+  // already have audio) and never blocks or fails boot: a TTS outage is logged and navigation
+  // still falls back to shorter spoken instructions.
+  try {
+    await app.get(VoiceService).pregenerateGlobalPacks();
+  } catch (error) {
+    new Logger('Bootstrap').warn(
+      `Voice pack pre-generation skipped: ${(error as Error).message}`,
+    );
+  }
 
   app.useGlobalPipes(
     new ValidationPipe({
