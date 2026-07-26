@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 
 import { config } from '../config';
 import { PrismaService } from '../db/prisma.service';
+import { RetentionService } from '../retention/retention.service';
 import { ProviderRegistry } from '../routing/providers/provider-registry';
 import { DangerZonesService } from '../zones/danger-zones.service';
 import { ZonesService } from '../zones/zones.service';
@@ -14,6 +15,7 @@ export class AdminService {
     private readonly registry: ProviderRegistry,
     private readonly zones: ZonesService,
     private readonly dangerZones: DangerZonesService,
+    private readonly retention: RetentionService,
   ) {}
 
   /** A single snapshot for the admin dashboard: providers, counts, data versions, uptime. */
@@ -26,6 +28,7 @@ export class AdminService {
       sessionsTotal,
       computes,
       feedback,
+      users,
       zoneCount,
       zonesVersion,
       dangerVersion,
@@ -38,6 +41,7 @@ export class AdminService {
       this.prisma.navSession.count(),
       this.prisma.routeComputeStat.count(),
       this.prisma.navFeedback.count(),
+      this.prisma.user.count(),
       this.prisma.$queryRaw<{ count: bigint }[]>`SELECT count(*)::bigint AS count FROM zones`,
       // The zone data version is the highest across all cumulative layers (machmirim includes
       // every layer), so it moves whenever any layer is bumped.
@@ -58,6 +62,12 @@ export class AdminService {
         sessionsTotal,
         computes,
         feedback,
+        users,
+      },
+      retention: {
+        days: config.retentionDays,
+        sweepHours: config.retentionSweepHours,
+        last: this.retention.last(),
       },
       versions: {
         zones: zonesVersion,

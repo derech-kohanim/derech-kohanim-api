@@ -100,6 +100,15 @@ export const config = {
   runMigrationsOnBoot: bool(process.env.RUN_MIGRATIONS_ON_BOOT, true),
   seedOnBoot: bool(process.env.SEED_ON_BOOT, true),
 
+  /**
+   * How long navigation telemetry (sessions, stored routes, compute stats) is kept before the
+   * retention sweep deletes it. 0 disables the sweep and keeps everything - development only.
+   * End-of-trip feedback is exempt: it survives the purge of the route it refers to.
+   */
+  retentionDays: num(process.env.RETENTION_DAYS, 30),
+  /** Hours between retention sweeps. */
+  retentionSweepHours: num(process.env.RETENTION_SWEEP_HOURS, 24),
+
   /** Distance from the route line beyond which the driver counts as off route. */
   offRouteThresholdMeters: num(process.env.OFF_ROUTE_THRESHOLD_METERS, 45),
   /** Consecutive off-route reports before a reroute is triggered. */

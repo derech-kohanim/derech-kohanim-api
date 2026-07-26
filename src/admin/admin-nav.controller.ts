@@ -26,11 +26,16 @@ export class AdminNavController {
       'design: per-second client reporting was removed.',
   })
   sessions(@Query() query: NavSessionsQueryDto): Promise<AdminNavSession[]> {
-    return this.nav.listSessions(query.status, query.limit, query.offset);
+    return this.nav.listSessions(query.status, query.limit, query.offset, query.userId);
   }
 
   @Get('sessions/:id')
-  @ApiOperation({ summary: 'One session with a route summary and any feedback on that route' })
+  @ApiOperation({
+    summary: 'One session with its full route debug picture',
+    description:
+      'The session, the route it is on, every route the same compute offered (plan), the ' +
+      'reroute trail, and the feedback left on those routes.',
+  })
   session(@Param('id') id: string): Promise<AdminNavSessionDetail> {
     return this.nav.getSession(id);
   }

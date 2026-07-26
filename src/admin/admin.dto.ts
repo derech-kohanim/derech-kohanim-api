@@ -7,11 +7,12 @@ import {
   IsOptional,
   IsString,
   Max,
+  MaxLength,
   Min,
 } from 'class-validator';
 
 import { STRINGENCY_VALUES } from '../common/dto';
-import type { GeoJsonPolygon, Stringency } from '@shared';
+import type { GeoJsonPolygon, Stringency, UserTier } from '@shared';
 
 const SESSION_STATUS = ['live', 'ended', 'all'] as const;
 type SessionStatusFilter = (typeof SESSION_STATUS)[number];
@@ -39,6 +40,34 @@ export class NavSessionsQueryDto extends PaginationDto {
   @IsOptional()
   @IsIn(SESSION_STATUS)
   status: SessionStatusFilter = 'all';
+
+  @ApiPropertyOptional({ description: 'Only sessions belonging to this account' })
+  @IsOptional()
+  @IsString()
+  userId?: string;
+}
+
+export class UsersQueryDto extends PaginationDto {
+  @ApiPropertyOptional({ description: 'Matches email or display name, case-insensitively' })
+  @IsOptional()
+  @IsString()
+  search?: string;
+}
+
+const USER_TIERS: UserTier[] = ['guest', 'registered', 'verified'];
+
+/** The only account fields an operator may change from the console. */
+export class UpdateUserDto {
+  @ApiPropertyOptional({ enum: USER_TIERS })
+  @IsOptional()
+  @IsIn(USER_TIERS)
+  tier?: UserTier;
+
+  @ApiPropertyOptional({ description: 'Empty clears the name' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  displayName?: string;
 }
 
 export class UpdateZoneDto {

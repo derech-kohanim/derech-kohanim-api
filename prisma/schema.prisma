@@ -135,8 +135,16 @@ model PlacesCache {
 }
 
 model Route {
-  id        String   @id
-  userId    String?  @map("user_id")
+  id     String  @id
+  userId String? @map("user_id")
+  /// Groups every route one compute produced, so the console can show which alternatives were
+  /// offered next to the one a navigation session actually used.
+  planId String? @map("plan_id")
+  /// Where this route sat in its plan: primary | alternative | unavoided.
+  role   String  @default("primary")
+  /// Position within the plan, 0 for the recommended route.
+  rank   Int     @default(0)
+
   request   Json
   result    Json
   createdAt DateTime @default(now()) @map("created_at")
@@ -147,6 +155,8 @@ model Route {
   navFeedback NavFeedback[]
 
   @@index([userId])
+  @@index([planId])
+  @@index([createdAt])
   @@map("routes")
 }
 
@@ -169,16 +179,18 @@ model RouteReport {
 
 // End-of-trip feedback: a good/bad rating for a completed route, with optional free text on a
 // 'bad' rating. Guests may submit anonymously, so userId is nullable.
+// The route reference is nulled rather than cascaded when a route is purged by retention, so a
+// driver's rating of the service outlives the 30 day window on the route data itself.
 model NavFeedback {
   id        String   @id @default(uuid())
-  routeId   String   @map("route_id")
+  routeId   String?  @map("route_id")
   userId    String?  @map("user_id")
   rating    String
   text      String?
   createdAt DateTime @default(now()) @map("created_at")
 
-  route Route @relation(fields: [routeId], references: [id], onDelete: Cascade)
-  user  User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+  route Route? @relation(fields: [routeId], references: [id], onDelete: SetNull)
+  user  User?  @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([routeId])
   @@map("nav_feedback")
@@ -200,11 +212,33 @@ model NavSession {
   startedAt    DateTime  @default(now()) @map("started_at")
   endedAt      DateTime? @map("ended_at")
 
-  user  User? @relation(fields: [userId], references: [id], onDelete: SetNull)
-  route Route @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  user   User?             @relation(fields: [userId], references: [id], onDelete: SetNull)
+  route  Route             @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  routes NavSessionRoute[]
 
   @@index([userId])
   @@map("nav_sessions")
+}
+
+/**
+ * The trail of routes a session actually drove: the one it started on, then one row per
+ * reroute. NavSession.routeId only ever holds the current route, so without this the original
+ * route is lost the moment a driver goes off route - exactly the case worth debugging.
+ * route_id is a plain reference, not a foreign key: retention purges sessions and routes
+ * together, and a missing route must not take the trail with it.
+ */
+model NavSessionRoute {
+  id        String   @id @default(uuid())
+  sessionId String   @map("session_id")
+  routeId   String   @map("route_id")
+  /// initial | reroute
+  reason    String   @default("initial")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  session NavSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@map("nav_session_routes")
 }
 
 // Per-compute timing/debug telemetry for POST /api/routes/compute. Created out of band from an

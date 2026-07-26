@@ -121,14 +121,27 @@ export class RoutingService {
       userId,
     });
 
-    const toStore = [...plan.routes, ...(plan.unavoidedRoute ? [plan.unavoidedRoute] : [])];
-    for (const route of toStore) {
+    // One id for the whole plan. It is what lets the admin console answer "which alternatives
+    // did the system offer here, and which one did the driver navigate", instead of inferring
+    // the sibling routes from identical request payloads.
+    const planId = randomUUID();
+    const toStore: { route: RouteResult; role: string }[] = [
+      ...plan.routes.map((route, index) => ({
+        route,
+        role: index === 0 ? 'primary' : 'alternative',
+      })),
+      ...(plan.unavoidedRoute ? [{ route: plan.unavoidedRoute, role: 'unavoided' }] : []),
+    ];
+    for (const [index, entry] of toStore.entries()) {
       await this.prisma.route.create({
         data: {
-          id: route.id,
+          id: entry.route.id,
           userId,
+          planId,
+          role: entry.role,
+          rank: index,
           request: request as unknown as object,
-          result: route as unknown as object,
+          result: entry.route as unknown as object,
         },
       });
     }

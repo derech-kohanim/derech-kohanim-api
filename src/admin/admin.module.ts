@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 
+import { RetentionModule } from '../retention/retention.module';
 import { RoutingModule } from '../routing/routing.module';
 import { VoiceModule } from '../voice/voice.module';
 import { ZonesModule } from '../zones/zones.module';
@@ -7,6 +8,8 @@ import { AdminNavController } from './admin-nav.controller';
 import { AdminNavService } from './admin-nav.service';
 import { AdminPolygonsController } from './admin-polygons.controller';
 import { AdminRoutesController } from './admin-routes.controller';
+import { AdminUsersController } from './admin-users.controller';
+import { AdminUsersService } from './admin-users.service';
 import { AdminVoiceController } from './admin-voice.controller';
 import { AdminController } from './admin.controller';
 import { AdminGuard } from './admin.guard';
@@ -18,14 +21,15 @@ import { AdminService } from './admin.service';
  * them: voice, routing (incl. compute-stats), zones and danger zones.
  */
 @Module({
-  imports: [VoiceModule, RoutingModule, ZonesModule],
+  imports: [VoiceModule, RoutingModule, ZonesModule, RetentionModule],
   controllers: [
     AdminController,
     AdminVoiceController,
     AdminNavController,
     AdminRoutesController,
     AdminPolygonsController,
+    AdminUsersController,
   ],
-  providers: [AdminGuard, AdminService, AdminNavService],
+  providers: [AdminGuard, AdminService, AdminNavService, AdminUsersService],
 })
 export class AdminModule {}

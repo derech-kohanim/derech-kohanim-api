@@ -63,6 +63,9 @@ export class NavigationService {
         stringency: request.stringency,
         trafficAware: request.trafficAware,
         engine: result.engine,
+        // The session's own routeId is overwritten by every reroute; this trail keeps the
+        // route the driver set out on, which is what the console reports against the plan.
+        routes: { create: { routeId: route.id, reason: 'initial' } },
       },
     });
 
@@ -207,7 +210,9 @@ export class NavigationService {
 
     return {
       id: feedback.id,
-      routeId: feedback.routeId,
+      // Stored nullable so a rating outlives the retention purge of its route; on creation the
+      // route is right here.
+      routeId: input.routeId,
       rating: feedback.rating as NavFeedback['rating'],
       text: feedback.text,
       createdAt: feedback.createdAt.toISOString(),
@@ -240,7 +245,10 @@ export class NavigationService {
 
     await this.prisma.navSession.update({
       where: { id: sessionId },
-      data: { routeId: result.id },
+      data: {
+        routeId: result.id,
+        routes: { create: { routeId: result.id, reason: 'reroute' } },
+      },
     });
     return result;
   }
