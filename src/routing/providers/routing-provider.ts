@@ -51,4 +51,23 @@ export interface RoutingProvider {
    * `computeRoute`. Each element is an independent candidate; the caller verifies every one.
    */
   computeRoutes?(request: ProviderRouteRequest): Promise<ProviderRouteResponse[]>;
+
+  /**
+   * Two-phase timing, for a provider whose shape and whose travel time come from different
+   * engines (the hybrid). When present, `computeRoute`/`computeRoutes` return the shape carrying
+   * only the shape engine's own time, and this fills in the real ETA.
+   *
+   * The split exists because the search is decided entirely on geometry and distance: a
+   * candidate is chosen for being clean and short, never for its ETA. Pricing every candidate
+   * therefore spent a second upstream call on routes about to be discarded - the dominant cost
+   * of a slow compute. RoutingService now prices once, on the routes it actually returns.
+   *
+   * Called with the final routes and the original request; returns them in the same order.
+   * Never throws: a provider that cannot reach its pricing engine returns the routes as they
+   * came in, with a note.
+   */
+  priceRoutes?(
+    routes: ProviderRouteResponse[],
+    request: ProviderRouteRequest,
+  ): Promise<ProviderRouteResponse[]>;
 }

@@ -47,10 +47,17 @@ const MAX_DISTANCE_MISMATCH_RATIO = 0.6;
  *
  * The two differ whenever traffic differs, and the user always sees a Google ETA.
  *
+ * Pricing is a SECOND phase, not part of the shape call: `computeRoute`/`computeRoutes` hand
+ * back the shape engine's route untouched, and RoutingService calls `priceRoutes` once, on the
+ * routes it has settled on. The search itself picks candidates purely on clean geometry and
+ * distance, so pricing a candidate before it was chosen only ever bought a Google call for a
+ * route about to be discarded. On a plan that falls through to the detour search that was over
+ * half of the upstream calls, all of them on the critical path.
+ *
  * Safety rules that make this honest rather than convenient:
  *  - the geometry returned is ALWAYS the shape engine's, never Google's;
- *  - a shape that still touches a zone is never priced (the Google call would be wasted on a
- *    route about to be discarded, and RoutingService verifies the final geometry regardless);
+ *  - a shape that still touches a zone is never priced (RoutingService verifies the final
+ *    geometry regardless, and such a route is flagged unusable anyway);
  *  - the shape engine's own time is used only as a last-resort fallback (Google unreachable,
  *    or a gross route mismatch), and the note says so.
  */
@@ -77,20 +84,27 @@ export class HybridProvider implements RoutingProvider {
     return config.hybridShapeEngine === 'here' ? this.here : this.graphhopper;
   }
 
+  /** The shape only. The ETA arrives later, through `priceRoutes`. */
   async computeRoute(request: ProviderRouteRequest): Promise<ProviderRouteResponse> {
-    const base = await this.shape.computeRoute(request);
-    return this.priceShape(base, request);
+    return this.shape.computeRoute(request);
+  }
+
+  /** Every alternative shape comes from the polygon-blocking engine, unpriced. */
+  async computeRoutes(request: ProviderRouteRequest): Promise<ProviderRouteResponse[]> {
+    return this.shape.computeRoutes
+      ? this.shape.computeRoutes(request)
+      : [await this.shape.computeRoute(request)];
   }
 
   /**
-   * Each alternative shape comes from the polygon-blocking engine and is priced by Google
-   * independently, so every returned route keeps the same safety invariants as the single one.
+   * Prices the routes the plan actually returns. They go to Google concurrently: this is one
+   * round trip for the whole plan, however many routes it holds.
    */
-  async computeRoutes(request: ProviderRouteRequest): Promise<ProviderRouteResponse[]> {
-    const shapes = this.shape.computeRoutes
-      ? await this.shape.computeRoutes(request)
-      : [await this.shape.computeRoute(request)];
-    return Promise.all(shapes.map((shape) => this.priceShape(shape, request)));
+  async priceRoutes(
+    routes: ProviderRouteResponse[],
+    request: ProviderRouteRequest,
+  ): Promise<ProviderRouteResponse[]> {
+    return Promise.all(routes.map((route) => this.priceShape(route, request)));
   }
 
   private async priceShape(

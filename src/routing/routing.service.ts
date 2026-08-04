@@ -37,14 +37,22 @@ import type { GeoJsonPolygon, LatLng, RoutePlan, RouteRequest, RouteResult } fro
 const MAX_VIA_ATTEMPTS = 6;
 
 /**
+ * How many of those candidates are tried concurrently. They are independent guesses, so a wave
+ * costs one round trip instead of one per candidate; keeping the wave well under the total
+ * budget means a lucky first wave still ends the search without paying for the rest.
+ */
+const VIA_WAVE_SIZE = 3;
+
+/**
  * A clean route no longer than this multiple of the naive route is accepted immediately;
  * remaining candidates are then not worth their provider calls.
  */
 const ACCEPTABLE_DETOUR_RATIO = 1.4;
 
 /**
- * How many times the candidate ring may be rebuilt after discovering that a detour traded
- * one forbidden zone for another. Bounded so a pathological area cannot spin.
+ * How many waves of candidates may be sent, each one re-ranked after discovering that a detour
+ * traded one forbidden zone for another. MAX_VIA_ATTEMPTS is the binding limit in practice;
+ * this is the belt-and-braces bound so a pathological area cannot spin.
  */
 const MAX_FALLBACK_ROUNDS = 4;
 
@@ -132,19 +140,20 @@ export class RoutingService {
       })),
       ...(plan.unavoidedRoute ? [{ route: plan.unavoidedRoute, role: 'unavoided' }] : []),
     ];
-    for (const [index, entry] of toStore.entries()) {
-      await this.prisma.route.create({
-        data: {
-          id: entry.route.id,
-          userId,
-          planId,
-          role: entry.role,
-          rank: index,
-          request: request as unknown as object,
-          result: entry.route as unknown as object,
-        },
-      });
-    }
+    // Written in one statement rather than a row at a time: these are independent inserts, and
+    // each result blob carries a full route geometry, so serialising them put four avoidable
+    // round trips on the request path after the compute was already done.
+    await this.prisma.route.createMany({
+      data: toStore.map((entry, index) => ({
+        id: entry.route.id,
+        userId,
+        planId,
+        role: entry.role,
+        rank: index,
+        request: request as unknown as object,
+        result: entry.route as unknown as object,
+      })),
+    });
     return plan;
   }
 
@@ -179,27 +188,20 @@ export class RoutingService {
         `nearCorridor=${zones.length} avoidTolls=${Boolean(request.avoidTolls)}`,
     );
 
-    // (0) Naive baseline with avoidance off. Powers the debug overlay, the detour ratio, and
-    //     the unavoided comparison route.
-    const naive = await this.tryCompute(
-      provider,
-      { ...this.base(request), avoidAreas: [], via: [] },
-      attempts,
-      'naive',
-    );
-
     // Fail fast and fail safe: if an endpoint sits inside a zone no route can ever be clean.
+    // The test is pure geometry, so it runs before any upstream call rather than after one.
     const blockedEndpoint = this.endpointInsideZone(request, zones);
     if (blockedEndpoint) {
-      const route =
-        naive ??
-        (await provider.computeRoute({ ...this.base(request), avoidAreas: [], via: [] }));
+      const plain = { ...this.base(request), avoidAreas: [], via: [] };
+      const naive = await this.tryCompute(provider, plain, attempts, 'naive');
+      const route = naive ?? (await provider.computeRoute(plain));
+      const [priced] = await this.priceForPlan(provider, [route], request, polygons, attempts);
       return {
         routes: [
           this.result(
             request,
             provider,
-            route,
+            priced,
             naive,
             false,
             `endpoint_inside_zone:${blockedEndpoint}`,
@@ -210,13 +212,23 @@ export class RoutingService {
       };
     }
 
-    // (1) Native candidates - ask the provider to avoid the polygons AND return alternatives.
-    const rawCandidates = await this.tryComputeMany(
-      provider,
-      { ...this.base(request), avoidAreas: polygons, via: [], alternatives: WANTED_ALTERNATIVES },
-      attempts,
-      'native',
-    );
+    // (0) + (1) The naive baseline (which powers the debug overlay, the detour ratio and the
+    //     unavoided comparison) and the native avoid-the-polygons candidates are independent
+    //     requests, so they go out together: one round trip for both instead of two.
+    const [naive, rawCandidates] = await Promise.all([
+      this.tryCompute(
+        provider,
+        { ...this.base(request), avoidAreas: [], via: [] },
+        attempts,
+        'naive',
+      ),
+      this.tryComputeMany(
+        provider,
+        { ...this.base(request), avoidAreas: polygons, via: [], alternatives: WANTED_ALTERNATIVES },
+        attempts,
+        'native',
+      ),
+    ]);
 
     const cleanCandidates: ProviderRouteResponse[] = [];
     rawCandidates.forEach((candidate, index) => {
@@ -257,13 +269,18 @@ export class RoutingService {
       if (heuristic) cleanRoutes = [heuristic];
     }
 
-    // (3) Assemble the plan.
-    let routes: RouteResult[];
-    if (cleanRoutes.length > 0) {
-      const built = cleanRoutes.map((route) =>
-        this.result(request, provider, route, naive, true, undefined, attempts, zones),
-      );
-      routes = this.labelAndOrder(built).slice(0, MAX_PLAN_ROUTES);
+    // (3) Choose what the plan returns - still unpriced.
+    //
+    //     Every clean candidate is kept for pricing, and the cut to MAX_PLAN_ROUTES happens
+    //     after it, on the priced time. Cutting first on the shape engine's own time looks
+    //     tempting but is wrong: that time is traffic-dependent, so the same request in
+    //     free-flow and in live-traffic mode would keep different candidates and could return
+    //     different geometry for the same route. The set is bounded by WANTED_ALTERNATIVES, and
+    //     pricing is concurrent, so keeping all of it costs no extra round trip.
+    const clean = cleanRoutes.length > 0;
+    const chosen: ProviderRouteResponse[] = [];
+    if (clean) {
+      chosen.push(...cleanRoutes);
     } else {
       // Fail safe: never pad with an unclean alternative. Return the single unclean attempt,
       // flagged unusable, so the client can show "no clean route" and nav refuses it.
@@ -272,43 +289,90 @@ export class RoutingService {
           `${JSON.stringify(request.destination)} at stringency=${request.stringency}`,
       );
       const fallback = rawCandidates[0] ?? naive;
-      routes = fallback
-        ? [
-            this.result(
-              request,
-              provider,
-              fallback,
-              naive,
-              false,
-              'avoidance_failed',
-              attempts,
-              zones,
-            ),
-          ]
-        : [];
+      if (fallback) chosen.push(fallback);
     }
 
     // (4) The unavoided route, for side-by-side comparison, only when it was asked for AND
     //     avoidance actually changed the outcome (the plain route crosses a zone).
-    let unavoidedRoute: RouteResult | undefined;
-    if (request.includeUnavoided && naive) {
-      const naiveCheck = verifyRouteAgainstZones(naive.geometry, zones);
-      if (!naiveCheck.clean) {
-        unavoidedRoute = this.result(
-          request,
-          provider,
-          naive,
-          naive,
-          false,
-          'unavoided_comparison',
-          attempts,
-          zones,
-          { label: 'unavoided' },
-        );
-      }
+    const toPrice = [...chosen];
+    let naiveIndex = -1;
+    if (request.includeUnavoided && naive && !verifyRouteAgainstZones(naive.geometry, zones).clean) {
+      // The fail-safe route above can BE the naive one; then it is priced once and reused.
+      naiveIndex = toPrice.indexOf(naive);
+      if (naiveIndex === -1) naiveIndex = toPrice.push(naive) - 1;
     }
 
+    // (5) The only pricing round trip of the whole compute. Everything above was decided on
+    //     clean geometry and distance, so no discarded candidate ever cost a Google call.
+    const priced = await this.priceForPlan(provider, toPrice, request, polygons, attempts);
+
+    const built = priced
+      .slice(0, chosen.length)
+      .map((route) =>
+        this.result(
+          request,
+          provider,
+          route,
+          naive,
+          clean,
+          clean ? undefined : 'avoidance_failed',
+          attempts,
+          zones,
+        ),
+      );
+    const routes = clean ? this.labelAndOrder(built).slice(0, MAX_PLAN_ROUTES) : built;
+
+    const unavoidedRoute =
+      naiveIndex === -1
+        ? undefined
+        : this.result(
+            request,
+            provider,
+            priced[naiveIndex],
+            naive,
+            false,
+            'unavoided_comparison',
+            attempts,
+            zones,
+            { label: 'unavoided' },
+          );
+
     return { routes, ...(unavoidedRoute ? { unavoidedRoute } : {}) };
+  }
+
+  /**
+   * Fills in the travel time for the routes the plan actually returns, when the provider gets
+   * its shape and its time from different engines. One concurrent round trip for the whole
+   * plan, however many routes it holds.
+   *
+   * Never throws and never drops a route: a provider without the split, or an unreachable
+   * pricing engine, yields the routes exactly as they came in, carrying the shape engine's own
+   * time. A missing ETA must not be able to fail a compute that already found a clean route.
+   */
+  private async priceForPlan(
+    provider: RoutingProvider,
+    routes: ProviderRouteResponse[],
+    request: RouteRequest,
+    polygons: GeoJsonPolygon[],
+    attempts: string[],
+  ): Promise<ProviderRouteResponse[]> {
+    if (!provider.priceRoutes || routes.length === 0) return routes;
+    try {
+      const priced = await provider.priceRoutes(routes, {
+        ...this.base(request),
+        avoidAreas: polygons,
+        via: [],
+      });
+      priced.forEach((route, index) => {
+        if (route.note) attempts.push(`priced route ${index}: ${route.note}`);
+      });
+      return priced;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      attempts.push(`pricing failed: ${message}; keeping the shape engine's times`);
+      this.logger.warn(`pricing failed: ${message}`);
+      return routes;
+    }
   }
 
   /**
@@ -331,6 +395,11 @@ export class RoutingService {
     // Plan the whole detour first: one routing call through a chain of waypoints that threads
     // between the zones. The obstacle graph uses only the nearest zones (bounded cost); the
     // result is still verified against the full corridor set below.
+    //
+    // Planning itself is local, so every clearance level is planned up front and the routing
+    // calls go out together: one round trip instead of one per level. The tightest clean level
+    // still wins, exactly as it did when the levels were tried in turn.
+    const plans: { level: number; waypoints: LatLng[] }[] = [];
     for (const [level, clearance] of PLANNER_CLEARANCES.entries()) {
       const planned = planDetourWaypoints(
         request.origin,
@@ -343,26 +412,38 @@ export class RoutingService {
         attempts.push(`detour plan L${level + 1}: no zone-free chain exists at this clearance`);
         continue;
       }
+      // An empty chain means there is nothing to thread around at this clearance. A wider one
+      // would only detour further for no reason, so the plan search stops here.
       if (planned.length === 0) break;
+      plans.push({ level, waypoints: planned });
+    }
 
-      const label = `detour plan L${level + 1} (${planned.length} waypoint(s))`;
-      const planRoute = await this.tryCompute(
-        provider,
-        { ...this.base(request), avoidAreas: polygons, via: planned },
-        attempts,
-        label,
-      );
+    const planLabel = (plan: { level: number; waypoints: LatLng[] }) =>
+      `detour plan L${plan.level + 1} (${plan.waypoints.length} waypoint(s))`;
+
+    const plannedRoutes = await Promise.all(
+      plans.map((plan) =>
+        this.tryCompute(
+          provider,
+          { ...this.base(request), avoidAreas: polygons, via: plan.waypoints },
+          attempts,
+          planLabel(plan),
+        ),
+      ),
+    );
+
+    for (const [index, planRoute] of plannedRoutes.entries()) {
       if (!planRoute) continue;
-
+      const plan = plans[index];
       const planCheck = verifyRouteAgainstZones(planRoute.geometry, zones);
       attempts.push(
-        `${label} gave clean=${planCheck.clean} distance=${planRoute.distanceMeters}m` +
+        `${planLabel(plan)} gave clean=${planCheck.clean} distance=${planRoute.distanceMeters}m` +
           (planCheck.clean
             ? ''
             : ` offending=[${planCheck.offending.map((z) => z.properties.name).join(', ')}]`),
       );
       if (planCheck.clean) {
-        best = { route: planRoute, via: planned[0] };
+        best = { route: planRoute, via: plan.waypoints[0] };
         break;
       }
     }
@@ -379,12 +460,15 @@ export class RoutingService {
         : MAX_VIA_ATTEMPTS;
 
     for (let round = 1; round <= MAX_FALLBACK_ROUNDS && budget > 0; round++) {
+      // Ranked against the full attempt budget, not the remaining one: asking for only as many
+      // as are left would keep returning the same top few, which are already tried, and the
+      // search would starve itself before it had spent its budget.
       const candidates = suggestViaPoints(
         request.origin,
         request.destination,
         blocking,
         plannerZones,
-        budget,
+        MAX_VIA_ATTEMPTS,
       ).filter((via) => !tried.has(viaKey(via)));
 
       if (candidates.length === 0) break;
@@ -393,21 +477,29 @@ export class RoutingService {
           `[${blocking.map((z) => z.properties.name).join(', ')}]`,
       );
 
-      let learnedSomething = false;
+      // Candidates go out in waves rather than one at a time or all at once. One at a time cost
+      // up to six sequential round trips; all at once always paid for six calls even when the
+      // first guess was the good one. A wave is the middle: the calls inside it are concurrent,
+      // and a wave that already found a short enough detour means the rest are never made.
+      const batch = candidates.slice(0, Math.min(VIA_WAVE_SIZE, budget));
+      batch.forEach((via) => tried.add(viaKey(via)));
+      budget -= batch.length;
 
-      for (const via of candidates) {
-        if (budget <= 0) break;
-        tried.add(viaKey(via));
-        budget--;
+      const retries = await Promise.all(
+        batch.map((via) =>
+          this.tryCompute(
+            provider,
+            { ...this.base(request), avoidAreas: polygons, via: [via] },
+            attempts,
+            `via ${via.lat.toFixed(5)},${via.lng.toFixed(5)}`,
+          ),
+        ),
+      );
 
-        const label = `via ${via.lat.toFixed(5)},${via.lng.toFixed(5)}`;
-        const retry = await this.tryCompute(
-          provider,
-          { ...this.base(request), avoidAreas: polygons, via: [via] },
-          attempts,
-          label,
-        );
+      for (const [index, retry] of retries.entries()) {
         if (!retry) continue;
+        const via = batch[index];
+        const label = `via ${via.lat.toFixed(5)},${via.lng.toFixed(5)}`;
 
         const retryCheck = verifyRouteAgainstZones(retry.geometry, zones);
         attempts.push(
@@ -420,27 +512,27 @@ export class RoutingService {
         );
 
         if (!retryCheck.clean) {
+          // Every zone this attempt hit joins the blocking set, which is what re-ranks the
+          // candidates for the next wave.
           for (const zone of retryCheck.offending) {
             if (!blocking.some((known) => known.properties.id === zone.properties.id)) {
               blocking.push(zone);
-              learnedSomething = true;
             }
           }
-          if (learnedSomething) break;
           continue;
         }
 
         if (!best || retry.distanceMeters < best.route.distanceMeters) {
           best = { route: retry, via };
         }
-        if (best.route.distanceMeters <= referenceDistance * ACCEPTABLE_DETOUR_RATIO) {
-          attempts.push('fallback: detour is short enough, stopping the search');
-          budget = 0;
-          break;
-        }
       }
 
-      if (!learnedSomething) break;
+      // A short enough detour ends the search: a further wave can only find a longer one, and
+      // this is what keeps the common case at one wave rather than the whole budget.
+      if (best && best.route.distanceMeters <= referenceDistance * ACCEPTABLE_DETOUR_RATIO) {
+        attempts.push('fallback: detour is short enough, stopping the search');
+        break;
+      }
     }
 
     if (best) {
