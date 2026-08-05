@@ -122,7 +122,14 @@ export class GraphHopperProvider implements RoutingProvider {
     }
 
     // Alternatives need the plain two-point request; via points already pin the shape.
-    if (alternatives > 0 && via.length === 0 && !needsCustomModel) {
+    //
+    // Note what is NOT excluded here: a custom model. GraphHopper supports alternative routes
+    // in every mode (speed mode uses a different algorithm from flexible and hybrid, but both
+    // work), and skipping them whenever a custom model was present meant skipping them exactly
+    // when zones are being avoided - which is every real request. This engine then returned a
+    // single candidate where HERE returns several, so a shape that failed verification fell
+    // straight through to the expensive detour search instead of trying the next alternative.
+    if (alternatives > 0 && via.length === 0) {
       body.algorithm = 'alternative_route';
       body['alternative_route.max_paths'] = Math.min(alternatives + 1, 4);
     }
