@@ -24,15 +24,46 @@ model User {
   createdAt            DateTime  @default(now()) @map("created_at")
   updatedAt            DateTime  @updatedAt @map("updated_at")
 
-  refreshTokens RefreshToken[]
-  savedPlaces   SavedPlace[]
-  recentPlaces  RecentPlace[]
-  navSessions   NavSession[]
-  routes        Route[]
-  reports       RouteReport[]
-  navFeedback   NavFeedback[]
+  refreshTokens    RefreshToken[]
+  savedPlaces      SavedPlace[]
+  recentPlaces     RecentPlace[]
+  navSessions      NavSession[]
+  routes           Route[]
+  reports          RouteReport[]
+  navFeedback      NavFeedback[]
+  deletionRequests DeletionRequest[]
 
   @@map("users")
+}
+
+/**
+ * Someone asking for their account and data to be removed, raised from the public
+ * /delete-account page. The row records the request; an operator resolves it from the console.
+ * user_id is nulled rather than cascaded when the account goes, so completing a request does
+ * not erase the evidence that it was made and handled.
+ */
+model DeletionRequest {
+  id String @id @default(uuid())
+  /// The account the email resolved to at submission time, null when none matched.
+  userId String? @map("user_id")
+  email  String
+  /// True when the request arrived from a signed-in session, so the address is proven.
+  verified Boolean @default(false)
+  reason   String?
+  /// pending | completed | rejected
+  status String @default("pending")
+  /// web | android
+  source    String    @default("web")
+  note      String?
+  handledBy String?   @map("handled_by")
+  handledAt DateTime? @map("handled_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([status, createdAt])
+  @@index([email])
+  @@map("deletion_requests")
 }
 
 model RefreshToken {

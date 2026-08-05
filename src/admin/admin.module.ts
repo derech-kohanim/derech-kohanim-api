@@ -1,9 +1,11 @@
 import { Module } from '@nestjs/common';
 
+import { AccountModule } from '../account/account.module';
 import { RetentionModule } from '../retention/retention.module';
 import { RoutingModule } from '../routing/routing.module';
 import { VoiceModule } from '../voice/voice.module';
 import { ZonesModule } from '../zones/zones.module';
+import { AdminDeletionsController } from './admin-deletions.controller';
 import { AdminNavController } from './admin-nav.controller';
 import { AdminNavService } from './admin-nav.service';
 import { AdminPolygonsController } from './admin-polygons.controller';
@@ -21,7 +23,7 @@ import { AdminService } from './admin.service';
  * them: voice, routing (incl. compute-stats), zones and danger zones.
  */
 @Module({
-  imports: [VoiceModule, RoutingModule, ZonesModule, RetentionModule],
+  imports: [VoiceModule, RoutingModule, ZonesModule, RetentionModule, AccountModule],
   controllers: [
     AdminController,
     AdminVoiceController,
@@ -29,6 +31,7 @@ import { AdminService } from './admin.service';
     AdminRoutesController,
     AdminPolygonsController,
     AdminUsersController,
+    AdminDeletionsController,
   ],
   providers: [AdminGuard, AdminService, AdminNavService, AdminUsersService],
 })

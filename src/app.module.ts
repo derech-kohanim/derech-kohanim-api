@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 
+import { AccountModule } from './account/account.module';
 import { AdminModule } from './admin/admin.module';
 import { AuthModule } from './auth/auth.module';
 import { DbModule } from './db/db.module';
@@ -18,6 +19,7 @@ import { ZonesModule } from './zones/zones.module';
     DbModule,
     AuthModule,
     UsersModule,
+    AccountModule,
     PlacesModule,
     ZonesModule,
     RoutingModule,

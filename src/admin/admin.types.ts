@@ -256,6 +256,8 @@ export interface AdminSystem {
     computes: number;
     feedback: number;
     users: number;
+    /** Deletion requests still waiting for an operator. */
+    deletionsPending: number;
   };
   /** Data lifecycle: the configured window and what the last sweep removed. */
   retention: {

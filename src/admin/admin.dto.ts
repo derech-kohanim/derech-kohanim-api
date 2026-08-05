@@ -1,4 +1,4 @@
-import { ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
   IsIn,
@@ -12,7 +12,7 @@ import {
 } from 'class-validator';
 
 import { STRINGENCY_VALUES } from '../common/dto';
-import type { GeoJsonPolygon, Stringency, UserTier } from '@shared';
+import type { DeletionRequestStatus, GeoJsonPolygon, Stringency, UserTier } from '@shared';
 
 const SESSION_STATUS = ['live', 'ended', 'all'] as const;
 type SessionStatusFilter = (typeof SESSION_STATUS)[number];
@@ -68,6 +68,29 @@ export class UpdateUserDto {
   @IsString()
   @MaxLength(120)
   displayName?: string;
+}
+
+const DELETION_STATUSES = ['pending', 'completed', 'rejected'] as const;
+const DELETION_STATUS_FILTERS = [...DELETION_STATUSES, 'all'] as const;
+
+export class DeletionRequestsQueryDto extends PaginationDto {
+  @ApiPropertyOptional({ enum: DELETION_STATUS_FILTERS, default: 'pending' })
+  @IsOptional()
+  @IsIn(DELETION_STATUS_FILTERS)
+  status: DeletionRequestStatus | 'all' = 'pending';
+}
+
+/** The only fields an operator may write on a request; the rest is the audit record. */
+export class ResolveDeletionRequestDto {
+  @ApiProperty({ enum: DELETION_STATUSES })
+  @IsIn(DELETION_STATUSES)
+  status: DeletionRequestStatus;
+
+  @ApiPropertyOptional({ description: 'Operator note, e.g. how the requester was verified' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  note?: string;
 }
 
 export class UpdateZoneDto {

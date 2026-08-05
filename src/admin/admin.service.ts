@@ -29,6 +29,7 @@ export class AdminService {
       computes,
       feedback,
       users,
+      deletionsPending,
       zoneCount,
       zonesVersion,
       dangerVersion,
@@ -42,6 +43,7 @@ export class AdminService {
       this.prisma.routeComputeStat.count(),
       this.prisma.navFeedback.count(),
       this.prisma.user.count(),
+      this.prisma.deletionRequest.count({ where: { status: 'pending' } }),
       this.prisma.$queryRaw<{ count: bigint }[]>`SELECT count(*)::bigint AS count FROM zones`,
       // The zone data version is the highest across all cumulative layers (machmirim includes
       // every layer), so it moves whenever any layer is bumped.
@@ -63,6 +65,7 @@ export class AdminService {
         computes,
         feedback,
         users,
+        deletionsPending,
       },
       retention: {
         days: config.retentionDays,
