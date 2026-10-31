@@ -8,7 +8,12 @@ import type {
 import { AppException } from '../common/app-exception';
 import { config } from '../config';
 import { PrismaService } from '../db/prisma.service';
-import { CLIP_CATALOGUE, SEED_VOICE_PACKS } from './clip-catalogue';
+import {
+  CLIP_CATALOGUE,
+  SEED_VOICE_PACKS,
+  canonicalVoiceId,
+  clipText,
+} from './clip-catalogue';
 import { TtsService } from './tts.service';
 import type {
   Language,
@@ -29,21 +34,17 @@ export class VoiceService {
   ) {}
 
   /**
-   * Finds the pack for a request, tolerating a voiceId that does not exactly match: it tries
-   * the exact voice, then the language default (`<lang>-default`), then any pack for the
-   * language. This keeps resolve/pack working when a client sends a voiceId that predates the
-   * seeded set, instead of 404ing mid-navigation.
+   * Finds the pack for a request, tolerating a voiceId that does not exactly match: the id is
+   * first mapped onto a seeded voice (the legacy `he-default` and unknown ids land on he-male),
+   * then any pack for the language is accepted. This keeps resolve/pack working when a client
+   * sends a voiceId that predates the seeded set, instead of 404ing mid-navigation.
    */
   private async findPack(language: Language, voiceId: string) {
-    const byExact = await this.prisma.voicePack.findUnique({
-      where: { language_voiceId: { language, voiceId } },
+    const canonical = canonicalVoiceId(language, voiceId);
+    const byCanonical = await this.prisma.voicePack.findUnique({
+      where: { language_voiceId: { language, voiceId: canonical } },
     });
-    if (byExact) return byExact;
-
-    const byDefault = await this.prisma.voicePack.findUnique({
-      where: { language_voiceId: { language, voiceId: `${language}-default` } },
-    });
-    if (byDefault) return byDefault;
+    if (byCanonical) return byCanonical;
 
     return this.prisma.voicePack.findFirst({ where: { language } });
   }
@@ -119,14 +120,16 @@ export class VoiceService {
       const catalogue = CLIP_CATALOGUE.find((entry) => entry.key === key);
       // Street names are an open vocabulary keyed by hash, so the text is not known from the
       // key alone (spec section 15.5). Only closed-catalogue keys can be generated on resolve.
-      const text = catalogue?.text[language];
+      // The text and the synthesized voice follow the PACK's voice, not the id the client
+      // sent, so a legacy or unknown id still gets the gendered text of the pack it landed on.
+      const text = catalogue ? clipText(catalogue, language, pack.voiceId) : undefined;
       if (!text || !this.tts.available) {
         missing.push(key);
         continue;
       }
 
       const generated = await this.tts
-        .generate(key, text, language, voiceId)
+        .generate(key, text, language, pack.voiceId)
         .catch(() => null);
       if (!generated) {
         missing.push(key);
@@ -149,6 +152,7 @@ export class VoiceService {
           contentType: generated.contentType,
         },
         update: {
+          text,
           audioPath: generated.audioPath,
           source: 'generated',
           durationMs: generated.durationMs,
@@ -174,7 +178,7 @@ export class VoiceService {
 
   /**
    * Generates and stores audio for every closed-catalogue clip in the global packs
-   * (he-default, en-default), so a device can download a complete pack instead of triggering
+   * (he-male, he-female, en-default), so a device can download a complete pack instead of triggering
    * on-demand generation mid-navigation.
    *
    * Idempotent: clips that already carry audio bytes are skipped, so re-running on every boot
@@ -224,9 +228,9 @@ export class VoiceService {
         continue;
       }
 
-      const text = entry.text[language];
+      const text = clipText(entry, language, pack.voiceId);
       const generated = await this.tts
-        .generate(entry.key, text, language, voiceId)
+        .generate(entry.key, text, language, pack.voiceId)
         .catch(() => null);
       if (!generated) {
         failedCount += 1;
@@ -248,6 +252,7 @@ export class VoiceService {
           contentType: generated.contentType,
         },
         update: {
+          text,
           audioPath: generated.audioPath,
           source: 'generated',
           durationMs: generated.durationMs,

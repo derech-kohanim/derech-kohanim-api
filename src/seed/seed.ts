@@ -9,7 +9,12 @@ import { Pool } from 'pg';
 import { config } from '../config';
 import { runMigrations, waitForDatabase } from '../db/migrate';
 import { DEFAULT_PREFERENCES } from '../users/user.mapper';
-import { CLIP_CATALOGUE, SEED_VOICE_PACKS } from '../voice/clip-catalogue';
+import {
+  CLIP_CATALOGUE,
+  LEGACY_HEBREW_VOICE_ID,
+  SEED_VOICE_PACKS,
+  clipText,
+} from '../voice/clip-catalogue';
 import { TERMS_DOCUMENTS, TERMS_VERSION } from './terms';
 
 const DEMO_PASSWORD = process.env.SEED_DEMO_PASSWORD ?? 'derech1234';
@@ -96,6 +101,10 @@ async function seedDemoUser(prisma: PrismaClient): Promise<void> {
 }
 
 async function seedVoice(prisma: PrismaClient): Promise<void> {
+  // The single Hebrew pack predates the voice choice. Its id now resolves to he-male, so the
+  // row (and its clips, by cascade) is only stale data that would show up in the admin list.
+  await prisma.voicePack.deleteMany({ where: { id: LEGACY_HEBREW_VOICE_ID } });
+
   for (const pack of SEED_VOICE_PACKS) {
     await prisma.voicePack.upsert({
       where: { id: pack.id },
@@ -105,26 +114,65 @@ async function seedVoice(prisma: PrismaClient): Promise<void> {
       update: { voiceId: pack.voiceId, updatedAt: new Date() },
     });
 
-    for (const entry of CLIP_CATALOGUE) {
-      const text = entry.text[pack.language];
-      const hash = createHash('sha1').update(`${entry.key}|${text}`).digest('hex');
+    const existing = new Map(
+      (await prisma.voiceClip.findMany({ where: { packId: pack.id } })).map((clip) => [
+        clip.clipKey,
+        clip,
+      ]),
+    );
 
-      await prisma.voiceClip.upsert({
-        where: { packId_clipKey: { packId: pack.id, clipKey: entry.key } },
-        create: {
-          packId: pack.id,
-          clipKey: entry.key,
+    let changed = 0;
+    for (const entry of CLIP_CATALOGUE) {
+      const text = clipText(entry, pack.language, pack.voiceId);
+      const hash = createHash('sha1').update(`${entry.key}|${text}`).digest('hex');
+      const current = existing.get(entry.key);
+
+      if (!current) {
+        await prisma.voiceClip.create({
+          data: {
+            packId: pack.id,
+            clipKey: entry.key,
+            role: entry.role,
+            text,
+            audioPath: `${pack.id}/clips/${entry.key}.opus`,
+            source: 'recorded',
+            durationMs: entry.durationMs,
+            hash,
+          },
+        });
+        changed += 1;
+        continue;
+      }
+
+      if (current.text === text) continue;
+
+      // The wording changed, so the stored audio speaks the old text. Drop it: the clip goes
+      // back to a placeholder, pre-generation fills it with the new text, and the new hash
+      // tells devices to download it again.
+      await prisma.voiceClip.update({
+        where: { id: current.id },
+        data: {
           role: entry.role,
           text,
-          audioPath: `${pack.id}/clips/${entry.key}.opus`,
-          source: 'recorded',
           durationMs: entry.durationMs,
           hash,
+          source: 'recorded',
+          audio: null,
+          contentType: null,
         },
-        update: { text, durationMs: entry.durationMs, hash },
+      });
+      changed += 1;
+    }
+
+    if (changed > 0) {
+      await prisma.voicePack.update({
+        where: { id: pack.id },
+        data: { version: { increment: 1 }, updatedAt: new Date() },
       });
     }
-    console.log(`Seeded voice pack ${pack.id} with ${CLIP_CATALOGUE.length} clips`);
+    console.log(
+      `Seeded voice pack ${pack.id}: ${CLIP_CATALOGUE.length} clips, ${changed} new or changed`,
+    );
   }
 }
 
