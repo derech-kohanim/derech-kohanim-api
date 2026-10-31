@@ -12,6 +12,8 @@
     "seed:dev": "tsx src/seed/seed.ts",
     "import:areas": "node dist/derech-kohanim-api/scripts/import-areas.js",
     "import:areas:dev": "tsx scripts/import-areas.ts",
+    "import:osm-features": "node dist/derech-kohanim-api/scripts/import-osm-features.js",
+    "import:osm-features:dev": "tsx scripts/import-osm-features.ts",
     "export:graph-models": "node dist/derech-kohanim-api/scripts/export-graph-models.js",
     "export:graph-models:dev": "tsx scripts/export-graph-models.ts",
     "verify": "tsx scripts/verify.ts",

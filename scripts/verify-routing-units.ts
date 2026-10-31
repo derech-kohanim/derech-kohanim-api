@@ -1,11 +1,12 @@
 /**
- * Unit checks for the pure routing helpers: baked-profile naming and speed-limit segments.
- * No database, no network.
+ * Unit checks for the pure routing helpers: baked-profile naming, speed-limit segments,
+ * bearings and the OSM value parsers. No database, no network.
  *
  *   npx tsx scripts/verify-routing-units.ts
  */
 import assert from 'node:assert/strict';
 
+import { angleBetween, bearing } from '../src/common/bearing';
 import { buildVoiceKeys } from '../src/common/maneuver';
 import {
   bakedProfileName,
@@ -14,6 +15,7 @@ import {
   zoneBlockingModel,
 } from '../src/routing/baked-profiles';
 import { toSpeedLimits, toWayIds } from '../src/routing/providers/graphhopper-details';
+import { parseDirection, parseMaxSpeed } from './import-osm-features';
 import type { GeoJsonPolygon } from '@shared';
 
 let passed = 0;
@@ -80,6 +82,19 @@ check('way ids drop empty stretches', () => {
 });
 
 
+check('bearing and angles', () => {
+  assert.ok(Math.abs(bearing([35, 32], [35, 32.01])) < 0.5);
+  assert.ok(Math.abs(bearing([35, 32], [35.01, 32]) - 90) < 0.5);
+  assert.equal(angleBetween(350, 10), 20);
+});
+check('OSM parsers', () => {
+  assert.equal(parseMaxSpeed('50'), 50);
+  assert.equal(parseMaxSpeed('30 mph'), 48);
+  assert.equal(parseMaxSpeed('signals'), null);
+  assert.equal(parseDirection('270'), 270);
+  assert.equal(parseDirection('NE'), 45);
+  assert.equal(parseDirection('forward'), null);
+});
 check('roundabout exit is spoken after entering', () => {
   const keys = buildVoiceKeys(
     {

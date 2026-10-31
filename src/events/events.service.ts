@@ -4,6 +4,7 @@ import { AppException } from '../common/app-exception';
 import { locateOnRoute } from '../common/geo';
 import { PrismaService } from '../db/prisma.service';
 import { buildSeededBundle } from './events.builder';
+import { RoadAlertsService } from './road-alerts.service';
 import type {
   CreateReportRequest,
   GeoJsonLineString,
@@ -16,9 +17,15 @@ import type {
 
 @Injectable()
 export class EventsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly roadAlerts: RoadAlertsService,
+  ) {}
 
-  /** The full feed for a route: derived zone events, then any real user reports. */
+  /**
+   * The full feed for a route: derived zone events, speed cameras and rail crossings from the
+   * map, then any real user reports.
+   */
   async getBundle(routeId: string): Promise<RouteEventBundle> {
     const route = await this.loadRoute(routeId);
     const seeded = buildSeededBundle(route.geometry, route.maneuvers);
@@ -31,10 +38,11 @@ export class EventsService {
     const reportEvents = reports.map((report) =>
       this.toReportEvent(report, route.geometry),
     );
+    const alertEvents = await this.roadAlerts.alongRoute(routeId, route.geometry);
 
     return {
       routeId,
-      events: [...seeded.events, ...reportEvents],
+      events: [...seeded.events, ...alertEvents, ...reportEvents],
       traffic: seeded.traffic,
       delaySeconds: seeded.delaySeconds,
     };
