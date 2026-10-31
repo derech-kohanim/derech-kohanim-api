@@ -2,6 +2,7 @@ import { ApiPropertyOptional } from '@nestjs/swagger';
 import { IsBoolean, IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
 
 import { LANGUAGES, STRINGENCY_VALUES } from '../common/dto';
+import { ACCEPTED_VOICE_IDS } from '../voice/clip-catalogue';
 import type { Language, Stringency, ThemePreference } from '@shared';
 
 const THEMES: ThemePreference[] = ['system', 'light', 'dark'];
@@ -42,10 +43,13 @@ export class UpdatePreferencesDto {
   @IsBoolean()
   voiceEnabled?: boolean;
 
-  @ApiPropertyOptional({ example: 'he-default' })
+  @ApiPropertyOptional({
+    enum: ACCEPTED_VOICE_IDS,
+    example: 'he-female',
+    description: 'he-male, he-female or en-default. he-default is accepted as he-male.',
+  })
   @IsOptional()
-  @IsString()
-  @MaxLength(64)
+  @IsIn(ACCEPTED_VOICE_IDS)
   voiceId?: string;
 }
 

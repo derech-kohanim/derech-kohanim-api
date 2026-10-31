@@ -1,5 +1,6 @@
 import type { User as UserRow } from '@prisma/client';
 
+import { LEGACY_HEBREW_VOICE_ID } from '../voice/clip-catalogue';
 import type { AuthProvider, User, UserPreferences, UserTier } from '@shared';
 
 export const DEFAULT_PREFERENCES: UserPreferences = {
@@ -10,7 +11,7 @@ export const DEFAULT_PREFERENCES: UserPreferences = {
   avoidTolls: false,
   avoidDangerZones: true,
   voiceEnabled: true,
-  voiceId: 'he-default',
+  voiceId: 'he-male',
   units: 'metric',
 };
 
@@ -32,7 +33,12 @@ export function toPreferences(raw: unknown): UserPreferences {
     avoidTolls: value.avoidTolls ?? DEFAULT_PREFERENCES.avoidTolls,
     avoidDangerZones: value.avoidDangerZones ?? DEFAULT_PREFERENCES.avoidDangerZones,
     voiceEnabled: value.voiceEnabled ?? DEFAULT_PREFERENCES.voiceEnabled,
-    voiceId: value.voiceId ?? DEFAULT_PREFERENCES.voiceId,
+    // The legacy single Hebrew voice is the masculine one; report it under its current id so
+    // the voice picker on every client shows a real choice.
+    voiceId:
+      !value.voiceId || value.voiceId === LEGACY_HEBREW_VOICE_ID
+        ? DEFAULT_PREFERENCES.voiceId
+        : value.voiceId,
     units: 'metric',
   };
 }
