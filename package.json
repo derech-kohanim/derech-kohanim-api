@@ -12,8 +12,10 @@
     "seed:dev": "tsx src/seed/seed.ts",
     "import:areas": "node dist/derech-kohanim-api/scripts/import-areas.js",
     "import:areas:dev": "tsx scripts/import-areas.ts",
+    "export:graph-models": "node dist/derech-kohanim-api/scripts/export-graph-models.js",
+    "export:graph-models:dev": "tsx scripts/export-graph-models.ts",
     "verify": "tsx scripts/verify.ts",
-    "test": "tsx scripts/verify.ts",
+    "test": "tsx scripts/verify-routing-units.ts && tsx scripts/verify.ts",
     "prisma:generate": "prisma generate",
     "prisma:diff": "prisma migrate diff --from-empty --to-schema-datamodel prisma/schema.prisma --script",
     "postinstall": "prisma generate"

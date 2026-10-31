@@ -20,6 +20,7 @@ import { collectVoiceKeys, finaliseManeuvers, type DraftManeuver } from '../comm
 import { PrismaService } from '../db/prisma.service';
 import { DangerZonesService } from '../zones/danger-zones.service';
 import { ZonesService } from '../zones/zones.service';
+import { bakedZoneHash } from './baked-profiles';
 import { ProviderRegistry } from './providers/provider-registry';
 import { RouteComputeStatsService } from './route-compute-stats.service';
 import type {
@@ -27,7 +28,14 @@ import type {
   ProviderRouteResponse,
   RoutingProvider,
 } from './providers/routing-provider';
-import type { GeoJsonPolygon, LatLng, RoutePlan, RouteRequest, RouteResult } from '@shared';
+import type {
+  GeoJsonPolygon,
+  LatLng,
+  RoutePlan,
+  RouteRequest,
+  RouteResult,
+  Stringency,
+} from '@shared';
 
 /**
  * We evaluate a handful of candidate via points rather than one, because the geometrically
@@ -88,6 +96,12 @@ function viaKey(via: LatLng): string {
 @Injectable()
 export class RoutingService {
   private readonly logger = new Logger(RoutingService.name);
+  /** Per in-flight request, the baked profile its zone set maps to (see bakedZonesFor). */
+  private readonly bakedZonesByRequest = new WeakMap<RouteRequest, ProviderRouteRequest['bakedZones']>();
+  private readonly bakedHashCache = new Map<
+    Stringency,
+    { zones: AvoidZone[]; danger: AvoidZone[]; hash: string }
+  >();
 
   constructor(
     private readonly registry: ProviderRegistry,
@@ -172,6 +186,10 @@ export class RoutingService {
     // halachic stringency zones. Both share verification and annotation as AvoidZone.
     const avoidDanger = request.avoidDangerZones !== false;
     const dangerZones = avoidDanger ? await this.dangerZones.getAvoidZones() : [];
+    this.bakedZonesByRequest.set(
+      request,
+      this.bakedZonesFor(request, stringencyZones as AvoidZone[], dangerZones),
+    );
 
     // Only zones near the origin-destination corridor can affect this route. With hundreds of
     // real zones nationwide, filtering to the corridor is what keeps verification, the provider
@@ -582,6 +600,7 @@ export class RoutingService {
   private base(
     request: RouteRequest,
   ): Omit<ProviderRouteRequest, 'avoidAreas' | 'via' | 'alternatives'> {
+    const bakedZones = this.bakedZonesByRequest.get(request);
     return {
       origin: request.origin,
       destination: request.destination,
@@ -589,7 +608,33 @@ export class RoutingService {
       trafficAware: request.trafficAware,
       language: request.language ?? 'he',
       avoidTolls: request.avoidTolls ?? false,
+      ...(bakedZones ? { bakedZones } : {}),
     };
+  }
+
+  /**
+   * The baked-zone profile matching this request's FULL zone set - the stringency zones plus
+   * the danger zones, in the order the services return them, exactly as
+   * scripts/export-graph-models.ts exports them for the graph build. Only driving with danger
+   * zones avoided has a baked profile. The hash is cached per loaded zone list: the services
+   * hand back the same array until the data changes.
+   */
+  private bakedZonesFor(
+    request: RouteRequest,
+    stringencyZones: AvoidZone[],
+    dangerZones: AvoidZone[],
+  ): ProviderRouteRequest['bakedZones'] {
+    if (request.mode !== 'drive' || request.avoidDangerZones === false) return undefined;
+    const cached = this.bakedHashCache.get(request.stringency);
+    if (cached && cached.zones === stringencyZones && cached.danger === dangerZones) {
+      return { stringency: request.stringency, hash: cached.hash };
+    }
+    const hash = bakedZoneHash([
+      ...stringencyZones.map((zone) => zone.geometry),
+      ...dangerZones.map((zone) => zone.geometry),
+    ]);
+    this.bakedHashCache.set(request.stringency, { zones: stringencyZones, danger: dangerZones, hash });
+    return { stringency: request.stringency, hash };
   }
 
   private endpointInsideZone(request: RouteRequest, zones: AvoidZone[]): string | null {
@@ -688,6 +733,7 @@ export class RoutingService {
       ...(options.label ? { label: options.label } : {}),
       detourRatio,
       requiredVoiceKeys: collectVoiceKeys(maneuvers),
+      ...(route.speedLimits ? { speedLimits: route.speedLimits } : {}),
       debug: {
         naiveGeometry: naive?.geometry,
         attempts,

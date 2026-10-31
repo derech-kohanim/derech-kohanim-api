@@ -13,6 +13,10 @@ export interface DraftManeuver {
   point: LatLng;
   geometryIndex: number;
   street: string | null;
+  /** Road reference number, e.g. "1" or "443". */
+  roadRef?: string | null;
+  /** Roundabout exit to take, 1-based. */
+  exitNumber?: number;
   zone?: ManeuverZone;
 }
 
@@ -182,6 +186,12 @@ export function streetClipKey(street: string): string {
 }
 
 /**
+ * Highest roundabout exit with its own ordinal clip ("exit.1" .. "exit.8"). Mirrors
+ * ROUNDABOUT_EXIT_KEYS_MAX in the shared contract, which is type-only at runtime here.
+ */
+const ROUNDABOUT_EXIT_KEYS_MAX = 8;
+
+/**
  * The ordered clips needed to speak one step. The server never returns a finished sentence -
  * the client assembles both the screen text and the audio from this (spec section 15.1).
  */
@@ -195,6 +205,14 @@ export function buildVoiceKeys(maneuver: DraftManeuver, distanceMeters: number):
     keys.push('prefix.in', distanceClipKey(distanceMeters));
   }
   keys.push(`action.${maneuver.action}`);
+  if (
+    maneuver.action === 'roundabout_enter' &&
+    maneuver.exitNumber &&
+    maneuver.exitNumber >= 1 &&
+    maneuver.exitNumber <= ROUNDABOUT_EXIT_KEYS_MAX
+  ) {
+    keys.push(`exit.${maneuver.exitNumber}`);
+  }
   if (maneuver.street) keys.push(streetClipKey(maneuver.street));
   return keys;
 }
@@ -221,6 +239,8 @@ export function finaliseManeuvers(
       distanceMeters,
       geometryIndex: draft.geometryIndex,
       street: draft.street,
+      ...(draft.roadRef ? { roadRef: draft.roadRef } : {}),
+      ...(draft.exitNumber ? { exitNumber: draft.exitNumber } : {}),
       ...(draft.zone ? { zone: draft.zone } : {}),
       voiceKeys: buildVoiceKeys(draft, distanceMeters),
     });

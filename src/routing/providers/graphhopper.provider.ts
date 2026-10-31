@@ -2,17 +2,22 @@ import { Injectable, Logger } from '@nestjs/common';
 
 import type { DraftManeuver } from '../../common/maneuver';
 import { config } from '../../config';
+import { bakedProfileName, tollBlockingModel, zoneBlockingModel } from '../baked-profiles';
+import { type PathDetail, toSpeedLimits, toWayIds } from './graphhopper-details';
 import type {
   ProviderRouteRequest,
   ProviderRouteResponse,
   RoutingProvider,
 } from './routing-provider';
-import type { GeoJsonPolygon } from '@shared';
 
 interface GraphHopperInstruction {
   text?: string;
   sign?: number;
   street_name?: string;
+  /** Road reference number, e.g. "1" or "443". */
+  street_ref?: string;
+  /** Roundabout exit to take (sign 6 only). */
+  exit_number?: number;
   /** [firstPointIndex, lastPointIndex] into the path geometry. */
   interval?: [number, number];
 }
@@ -23,6 +28,7 @@ interface GraphHopperPath {
   time?: number;
   points?: { type?: string; coordinates?: [number, number][] };
   instructions?: GraphHopperInstruction[];
+  details?: Record<string, PathDetail<unknown>[]>;
 }
 
 interface GraphHopperResponse {
@@ -31,13 +37,38 @@ interface GraphHopperResponse {
   hints?: { message?: string }[];
 }
 
+interface GraphHopperInfo {
+  profiles?: { name?: string }[];
+  encoded_values?: Record<string, unknown>;
+}
+
+interface EngineInfo {
+  profiles: Set<string>;
+  encodedValues: Set<string>;
+}
+
+/** Path details requested for driving routes, when the graph was built with them. */
+const DRIVE_DETAILS = ['max_speed', 'max_speed_estimated', 'urban_density', 'osm_way_id'];
+
+/** How long the engine's profile list is trusted before it is fetched again. */
+const INFO_TTL_MS = 60_000;
+
+/** After a failed /info, how long before it is tried again. */
+const INFO_RETRY_MS = 10_000;
+
 /**
  * GraphHopper provider - the only engine here whose avoidance we express ourselves, and the
  * only one where that expression happens inside the graph search.
  *
- * The zone polygons are sent as a `custom_model`: each polygon becomes an entry in `areas`
- * and a `priority` rule multiplies it by 0, so the router cannot traverse those edges at
- * all. Custom models require the flexible mode, hence `ch.disable: true`.
+ * Two ways to avoid zones, chosen per request:
+ *
+ * - Baked: the graph was built with a profile whose custom model already blocks the request's
+ *   exact zone set (see routing/baked-profiles.ts). The request names that profile and nothing
+ *   else, so it runs in speed mode (contraction hierarchies) like a plain route. Toll avoidance
+ *   is layered on as a small per-request model, which runs in hybrid mode (landmarks).
+ * - Per request: the zone polygons travel in the request as a `custom_model`, each polygon an
+ *   area with priority 0, which needs `ch.disable`. Used whenever no matching baked profile is
+ *   loaded (a graph built from older zones, danger zones switched off, or a fresh install).
  *
  * What it does not have is live traffic, which is surfaced through `supportsLiveTraffic`.
  */
@@ -49,6 +80,8 @@ export class GraphHopperProvider implements RoutingProvider {
   readonly supportsLiveTraffic = false;
 
   private readonly logger = new Logger(GraphHopperProvider.name);
+  private info: (EngineInfo & { expiresAt: number }) | null = null;
+  private infoInFlight: Promise<void> | null = null;
 
   async computeRoute(request: ProviderRouteRequest): Promise<ProviderRouteResponse> {
     const routes = await this.computeRoutes({ ...request, alternatives: 0 });
@@ -60,10 +93,11 @@ export class GraphHopperProvider implements RoutingProvider {
     // A self-hosted instance needs no key.
     if (config.graphHopperApiKey) url.searchParams.set('key', config.graphHopperApiKey);
 
+    const { body: requestBody, note } = await this.buildBody(request);
     const response = await fetch(url.toString(), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(this.buildBody(request)),
+      body: JSON.stringify(requestBody),
     });
 
     const bodyText = await response.text();
@@ -90,23 +124,78 @@ export class GraphHopperProvider implements RoutingProvider {
 
     return paths.map((path) => {
       const coordinates = path.points!.coordinates!;
+      const details = path.details ?? {};
+      const speedLimits = toSpeedLimits(
+        details.max_speed as PathDetail<number | null>[] | undefined,
+        details.max_speed_estimated as PathDetail<boolean | null>[] | undefined,
+        details.urban_density as PathDetail<string | null>[] | undefined,
+      );
+      const wayIds = toWayIds(details.osm_way_id as PathDetail<number | null>[] | undefined);
       return {
         geometry: { type: 'LineString' as const, coordinates },
         maneuvers: this.toManeuvers(path, coordinates),
         distanceMeters: Math.round(path.distance ?? 0),
         durationSeconds: Math.round((path.time ?? 0) / 1000),
+        ...(note ? { note } : {}),
+        ...(speedLimits ? { speedLimits } : {}),
+        ...(wayIds ? { wayIds } : {}),
       };
     });
   }
 
-  private buildBody(request: ProviderRouteRequest): Record<string, unknown> {
+  /**
+   * The profiles and encoded values the running engine was built with. Cached briefly: they
+   * change only when a rebuilt graph is swapped in, and a stale answer is harmless - a profile
+   * that vanished fails one request, a new one is picked up within a minute.
+   */
+  private async engineInfo(): Promise<EngineInfo> {
+    if (this.info && Date.now() < this.info.expiresAt) return this.info;
+    if (!this.infoInFlight) {
+      this.infoInFlight = this.fetchInfo().finally(() => {
+        this.infoInFlight = null;
+      });
+    }
+    await this.infoInFlight;
+    return this.info ?? { profiles: new Set(), encodedValues: new Set() };
+  }
+
+  private async fetchInfo(): Promise<void> {
+    try {
+      const url = new URL(config.graphHopperUrl);
+      url.pathname = url.pathname.replace(/\/route\/?$/, '/info');
+      if (config.graphHopperApiKey) url.searchParams.set('key', config.graphHopperApiKey);
+      const response = await fetch(url.toString(), { signal: AbortSignal.timeout(5000) });
+      if (!response.ok) throw new Error(`status ${response.status}`);
+      const info = (await response.json()) as GraphHopperInfo;
+      this.info = {
+        expiresAt: Date.now() + INFO_TTL_MS,
+        profiles: new Set((info.profiles ?? []).map((p) => p.name ?? '').filter(Boolean)),
+        encodedValues: new Set(Object.keys(info.encoded_values ?? {})),
+      };
+    } catch (error) {
+      this.logger.warn(`GraphHopper /info failed: ${(error as Error).message}`);
+      // Remember the failure briefly too, so an unreachable engine is not asked per request.
+      this.info = {
+        expiresAt: Date.now() + INFO_RETRY_MS,
+        profiles: new Set(),
+        encodedValues: new Set(),
+      };
+    }
+  }
+
+  private async buildBody(
+    request: ProviderRouteRequest,
+  ): Promise<{ body: Record<string, unknown>; note?: string }> {
     const { origin, destination, mode, via = [], avoidAreas, avoidTolls, language } = request;
     const alternatives = request.alternatives ?? 0;
+    const walking = mode === 'walk';
+    // Only a self-hosted engine can carry our profiles and encoded values.
+    const info = config.graphHopperSelfHosted ? await this.engineInfo() : null;
 
     const points = [origin, ...via, destination].map((p) => [p.lng, p.lat]);
 
     const body: Record<string, unknown> = {
-      profile: mode === 'walk' ? 'foot' : 'car',
+      profile: walking ? 'foot' : 'car',
       points,
       // GeoJSON out - no polyline decoding, no decoder bugs.
       points_encoded: false,
@@ -115,20 +204,47 @@ export class GraphHopperProvider implements RoutingProvider {
       calc_points: true,
     };
 
-    const needsCustomModel = avoidAreas.length > 0 || avoidTolls;
-    if (needsCustomModel) {
-      body['ch.disable'] = true; // custom models are only available in flexible mode
-      body.custom_model = this.buildCustomModel(avoidAreas, Boolean(avoidTolls));
+    if (!walking && info) {
+      // Asking for a detail the graph was not built with fails the whole request.
+      const details = DRIVE_DETAILS.filter((key) => info.encodedValues.has(key));
+      if (details.length > 0) body.details = details;
+    }
+
+    let note: string | undefined;
+    const baked =
+      !walking && avoidAreas.length > 0 && request.bakedZones
+        ? bakedProfileName(request.bakedZones.stringency, request.bakedZones.hash)
+        : null;
+
+    if (baked && info?.profiles.has(baked)) {
+      // The zones are already in the graph: no polygons, and speed mode unless tolls are avoided.
+      body.profile = baked;
+      if (avoidTolls) {
+        body['ch.disable'] = true; // a per-request model runs in hybrid mode (landmarks)
+        body.custom_model = tollBlockingModel();
+      }
+      note = `baked profile ${baked}`;
+    } else {
+      if (baked && info) note = `no baked profile ${baked} loaded; zones sent per request`;
+      const needsCustomModel = avoidAreas.length > 0 || avoidTolls;
+      if (needsCustomModel) {
+        body['ch.disable'] = true; // custom models are only available in flexible/hybrid mode
+        const zones = zoneBlockingModel(avoidAreas);
+        body.custom_model = avoidTolls
+          ? { ...zones, priority: [...zones.priority, ...tollBlockingModel().priority] }
+          : zones;
+      }
+    }
+
+    if (walking) {
+      // Walking has no prepared graph: always the flexible mode.
+      body['ch.disable'] = true;
+      body['lm.disable'] = true;
     }
 
     // Alternatives need the plain two-point request; via points already pin the shape.
-    //
-    // Note what is NOT excluded here: a custom model. GraphHopper supports alternative routes
-    // in every mode (speed mode uses a different algorithm from flexible and hybrid, but both
-    // work), and skipping them whenever a custom model was present meant skipping them exactly
-    // when zones are being avoided - which is every real request. This engine then returned a
-    // single candidate where HERE returns several, so a shape that failed verification fell
-    // straight through to the expensive detour search instead of trying the next alternative.
+    // GraphHopper 11 computes alternatives with whichever solver the request selects (speed,
+    // hybrid or flexible mode), so a custom model does not rule them out.
     if (alternatives > 0 && via.length === 0) {
       body.algorithm = 'alternative_route';
       body['alternative_route.max_paths'] = Math.min(alternatives + 1, 4);
@@ -140,49 +256,7 @@ export class GraphHopperProvider implements RoutingProvider {
       );
     }
 
-    return body;
-  }
-
-  /**
-   * Zones become areas with priority 0 (impassable). When avoidTolls is set, toll roads are
-   * multiplied by 0 too, using the `toll` encoded value the car profile carries.
-   */
-  private buildCustomModel(
-    polygons: GeoJsonPolygon[],
-    avoidTolls: boolean,
-  ): Record<string, unknown> {
-    const features = polygons.map((polygon, index) => ({
-      type: 'Feature',
-      id: `zone_${index}`,
-      properties: {},
-      geometry: { type: 'Polygon', coordinates: this.closedRing(polygon) },
-    }));
-
-    const priority: { if: string; multiply_by: string }[] = features.map((feature) => ({
-      if: `in_${feature.id}`,
-      multiply_by: '0',
-    }));
-    if (avoidTolls) {
-      // The car profile carries a `toll` encoded value (NO/ALL/HGV); block the tolled ones.
-      priority.push({ if: 'toll == ALL', multiply_by: '0' });
-      priority.push({ if: 'toll == HGV', multiply_by: '0' });
-    }
-
-    return {
-      priority,
-      areas: { type: 'FeatureCollection', features },
-    };
-  }
-
-  /** GraphHopper requires the ring to be explicitly closed. */
-  private closedRing(polygon: GeoJsonPolygon): [number, number][][] {
-    const ring = [...(polygon.coordinates[0] ?? [])];
-    const first = ring[0];
-    const last = ring[ring.length - 1];
-    if (first && last && (first[0] !== last[0] || first[1] !== last[1])) {
-      ring.push([first[0], first[1]]);
-    }
-    return [ring];
+    return { body, note };
   }
 
   private toManeuvers(
@@ -200,6 +274,10 @@ export class GraphHopperProvider implements RoutingProvider {
         point: { lat: point[1], lng: point[0] },
         geometryIndex: index,
         street: instruction.street_name || null,
+        ...(instruction.street_ref ? { roadRef: instruction.street_ref } : {}),
+        ...(instruction.sign === 6 && instruction.exit_number
+          ? { exitNumber: instruction.exit_number }
+          : {}),
       });
     }
     return maneuvers;

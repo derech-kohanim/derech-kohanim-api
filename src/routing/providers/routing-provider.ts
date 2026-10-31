@@ -1,5 +1,13 @@
 import type { DraftManeuver } from '../../common/maneuver';
-import type { GeoJsonLineString, GeoJsonPolygon, Language, LatLng, TravelMode } from '@shared';
+import type {
+  GeoJsonLineString,
+  GeoJsonPolygon,
+  Language,
+  LatLng,
+  SpeedLimitSegment,
+  Stringency,
+  TravelMode,
+} from '@shared';
 
 export interface ProviderRouteRequest {
   origin: LatLng;
@@ -19,6 +27,13 @@ export interface ProviderRouteRequest {
    * 0 (or absent) means just the primary. Ignored by `computeRoute`.
    */
   alternatives?: number;
+  /**
+   * The baked-zone profile that blocks exactly `avoidAreas`' full zone set (before any
+   * corridor filtering): the stringency and the hash of its polygons. A provider that has a
+   * prepared profile with this name may route on it instead of sending the polygons; any other
+   * provider ignores it. See routing/baked-profiles.ts.
+   */
+  bakedZones?: { stringency: Stringency; hash: string };
 }
 
 export interface ProviderRouteResponse {
@@ -28,6 +43,13 @@ export interface ProviderRouteResponse {
   durationSeconds: number;
   /** Optional provider-side remark, surfaced in the debug attempt log. */
   note?: string;
+  /** Speed limits along the geometry, when the engine knows them. */
+  speedLimits?: SpeedLimitSegment[];
+  /**
+   * OSM way id per stretch of the geometry, as [fromIndex, toIndex, wayId] like a path
+   * detail. Only the self-hosted GraphHopper provides it; lane guidance is looked up from it.
+   */
+  wayIds?: [number, number, number][];
 }
 
 /**
