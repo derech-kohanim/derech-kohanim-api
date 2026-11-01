@@ -10,6 +10,7 @@ import { NavigationModule } from './navigation/navigation.module';
 import { PlacesModule } from './places/places.module';
 import { RetentionModule } from './retention/retention.module';
 import { RoutingModule } from './routing/routing.module';
+import { SupportModule } from './support/support.module';
 import { UsersModule } from './users/users.module';
 import { VoiceModule } from './voice/voice.module';
 import { ZonesModule } from './zones/zones.module';
@@ -28,6 +29,7 @@ import { ZonesModule } from './zones/zones.module';
     EventsModule,
     RetentionModule,
     AdminModule,
+    SupportModule,
   ],
   controllers: [HealthController],
 })

@@ -83,6 +83,13 @@ export const config = {
    */
   ttsProvider: (process.env.TTS_PROVIDER ?? 'google').toLowerCase(),
 
+  /**
+   * User reports become issues in this private GitHub repository. The token is a fine-grained
+   * one with Issues read/write on that repository only. Empty disables reporting.
+   */
+  supportGithubToken: process.env.SUPPORT_GITHUB_TOKEN ?? '',
+  supportGithubRepo: process.env.SUPPORT_GITHUB_REPO ?? 'derech-kohanim/derech-kohanim-support',
+
   graphHopperApiKey: process.env.GRAPHHOPPER_API_KEY ?? '',
   graphHopperUrl: process.env.GRAPHHOPPER_URL ?? 'https://graphhopper.com/api/1/route',
   graphHopperSelfHosted: bool(process.env.GRAPHHOPPER_SELF_HOSTED, false),
