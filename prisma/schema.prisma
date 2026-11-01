@@ -16,6 +16,7 @@ model User {
   passwordHash         String?   @map("password_hash")
   googleSub            String?   @unique @map("google_sub")
   displayName          String?   @map("display_name")
+  avatarUrl            String?   @map("avatar_url")
   tier                 String    @default("registered")
   providers            String[]  @default([])
   preferences          Json

@@ -48,6 +48,7 @@ export function toUser(row: UserRow): User {
     id: row.id,
     email: row.email,
     displayName: row.displayName,
+    avatarUrl: row.avatarUrl,
     tier: row.tier as UserTier,
     providers: row.providers as AuthProvider[],
     preferences: toPreferences(row.preferences),

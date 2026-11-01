@@ -112,6 +112,8 @@ export class AuthService {
           googleSub: payload.sub,
           providers: [...providers],
           displayName: existing.displayName ?? payload.name ?? null,
+          // Refreshed at every Google sign-in, so a changed account picture follows.
+          ...(payload.picture ? { avatarUrl: payload.picture } : {}),
           ...(acceptedTermsVersion
             ? { acceptedTermsVersion, acceptedTermsAt: new Date() }
             : {}),
@@ -129,6 +131,7 @@ export class AuthService {
         email: payload.email?.toLowerCase() ?? null,
         googleSub: payload.sub,
         displayName: payload.name ?? null,
+        avatarUrl: payload.picture ?? null,
         tier: 'registered',
         providers: ['google'],
         preferences: DEFAULT_PREFERENCES as unknown as object,
