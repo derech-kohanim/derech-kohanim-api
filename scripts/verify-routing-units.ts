@@ -16,7 +16,14 @@ import {
   zoneBlockingModel,
 } from '../src/routing/baked-profiles';
 import { lanesForAction, parseTurnLanes, turnLanesFor } from '../src/routing/lanes';
+import { config } from '../src/config';
 import { toSpeedLimits, toWayIds } from '../src/routing/providers/graphhopper-details';
+import {
+  GraphHopperProvider,
+  GraphHopperUnavailableError,
+} from '../src/routing/providers/graphhopper.provider';
+import { HybridProvider } from '../src/routing/providers/hybrid.provider';
+import type { ProviderRouteRequest } from '../src/routing/providers/routing-provider';
 import { parseDirection, parseMaxSpeed } from './import-osm-features';
 import type { GeoJsonPolygon } from '@shared';
 
@@ -163,4 +170,48 @@ check('deviation: grid search matches the exact distance and stops early with a 
   assert.ok(Math.abs(maxDeviationMeters(a, detour) - 1990) < 15, `got ${maxDeviationMeters(a, detour)}`);
 });
 
-process.stdout.write(`\n${passed} passed - PASS\n`);
+async function checkAsync(name: string, fn: () => Promise<void>): Promise<void> {
+  await fn();
+  passed += 1;
+  process.stdout.write(`PASS ${name}\n`);
+}
+
+async function hybridBackupChecks(): Promise<void> {
+  const saved = { engine: config.hybridShapeEngine, key: config.hereApiKey };
+  const request = {} as ProviderRouteRequest;
+  const fakeRoute = (engine: string) => ({ engine }) as never;
+  const make = (ghError: Error | null) => {
+    const graphhopper = Object.create(GraphHopperProvider.prototype) as GraphHopperProvider;
+    graphhopper.computeRoutes = async () => {
+      if (ghError) throw ghError;
+      return [fakeRoute('graphhopper')];
+    };
+    const here = { computeRoute: async () => fakeRoute('here') };
+    return new HybridProvider(graphhopper, here as never, {} as never);
+  };
+  try {
+    config.hybridShapeEngine = 'graphhopper';
+    config.hereApiKey = 'key';
+    await checkAsync('hybrid: an unreachable GraphHopper is answered by HERE', async () => {
+      const routes = await make(new GraphHopperUnavailableError('down')).computeRoutes(request);
+      assert.deepEqual(routes, [{ engine: 'here' }]);
+    });
+    await checkAsync('hybrid: a real routing failure is not retried on HERE', async () => {
+      await assert.rejects(make(new Error('no route')).computeRoutes(request), /no route/);
+    });
+    config.hereApiKey = '';
+    await checkAsync('hybrid: no backup without a HERE key', async () => {
+      await assert.rejects(
+        make(new GraphHopperUnavailableError('down')).computeRoutes(request),
+        GraphHopperUnavailableError,
+      );
+    });
+  } finally {
+    config.hybridShapeEngine = saved.engine;
+    config.hereApiKey = saved.key;
+  }
+}
+
+void hybridBackupChecks().then(() => {
+  process.stdout.write(`\n${passed} passed - PASS\n`);
+});

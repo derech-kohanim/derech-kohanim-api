@@ -1,15 +1,22 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger } from "@nestjs/common";
 
-import { intersectsAnyPolygon, maxDeviationMeters, sampleWaypoints } from '../../common/geo';
-import { config } from '../../config';
-import { GoogleProvider } from './google.provider';
-import { GraphHopperProvider } from './graphhopper.provider';
-import { HereProvider } from './here.provider';
+import {
+  intersectsAnyPolygon,
+  maxDeviationMeters,
+  sampleWaypoints,
+} from "../../common/geo";
+import { config } from "../../config";
+import { GoogleProvider } from "./google.provider";
+import {
+  GraphHopperProvider,
+  GraphHopperUnavailableError,
+} from "./graphhopper.provider";
+import { HereProvider } from "./here.provider";
 import type {
   ProviderRouteRequest,
   ProviderRouteResponse,
   RoutingProvider,
-} from './routing-provider';
+} from "./routing-provider";
 
 /**
  * Google is pinned to the shape with waypoints spaced roughly every kilometre, not a fixed
@@ -63,7 +70,7 @@ const MAX_DISTANCE_MISMATCH_RATIO = 0.6;
  */
 @Injectable()
 export class HybridProvider implements RoutingProvider {
-  readonly name = 'hybrid';
+  readonly name = "hybrid";
   readonly supportsNativeAvoidance = true;
   readonly supportsLiveTraffic = true;
 
@@ -81,19 +88,52 @@ export class HybridProvider implements RoutingProvider {
 
   /** The engine that decides the route. Must be one that blocks polygons natively. */
   private get shape(): RoutingProvider {
-    return config.hybridShapeEngine === 'here' ? this.here : this.graphhopper;
+    return config.hybridShapeEngine === "here" ? this.here : this.graphhopper;
   }
 
   /** The shape only. The ETA arrives later, through `priceRoutes`. */
-  async computeRoute(request: ProviderRouteRequest): Promise<ProviderRouteResponse> {
-    return this.shape.computeRoute(request);
+  async computeRoute(
+    request: ProviderRouteRequest,
+  ): Promise<ProviderRouteResponse> {
+    return this.withBackupEngine((engine) => engine.computeRoute(request));
   }
 
   /** Every alternative shape comes from the polygon-blocking engine, unpriced. */
-  async computeRoutes(request: ProviderRouteRequest): Promise<ProviderRouteResponse[]> {
-    return this.shape.computeRoutes
-      ? this.shape.computeRoutes(request)
-      : [await this.shape.computeRoute(request)];
+  async computeRoutes(
+    request: ProviderRouteRequest,
+  ): Promise<ProviderRouteResponse[]> {
+    return this.withBackupEngine((engine) =>
+      engine.computeRoutes
+        ? engine.computeRoutes(request)
+        : engine.computeRoute(request).then((r) => [r]),
+    );
+  }
+
+  /**
+   * Runs a shape call on the configured engine. When that is the self-hosted GraphHopper and it
+   * is not serving (first graph build after a deploy, the restart during a nightly graph swap),
+   * the call is answered by HERE instead, if a HERE key is configured. HERE also blocks the
+   * zones natively, and RoutingService verifies the result against the zones either way, so
+   * the backup changes speed and attribution, never safety. A real routing failure ("no route")
+   * is not retried.
+   */
+  private async withBackupEngine<T>(
+    call: (engine: RoutingProvider) => Promise<T>,
+  ): Promise<T> {
+    const engine = this.shape;
+    try {
+      return await call(engine);
+    } catch (error) {
+      if (
+        engine !== this.graphhopper ||
+        !(error instanceof GraphHopperUnavailableError) ||
+        !config.hereApiKey
+      ) {
+        throw error;
+      }
+      this.logger.warn(`${error.message}; answering this route from HERE`);
+      return call(this.here);
+    }
   }
 
   /**
@@ -111,11 +151,14 @@ export class HybridProvider implements RoutingProvider {
     base: ProviderRouteResponse,
     request: ProviderRouteRequest,
   ): Promise<ProviderRouteResponse> {
-    const mode = request.trafficAware ? 'TRAFFIC_AWARE' : 'TRAFFIC_UNAWARE';
+    const mode = request.trafficAware ? "TRAFFIC_AWARE" : "TRAFFIC_UNAWARE";
 
     // Never price a shape that still touches a zone: that candidate is about to be discarded.
     if (intersectsAnyPolygon(base.geometry, request.avoidAreas)) {
-      return { ...base, note: 'traffic pricing skipped: this shape still touches a zone' };
+      return {
+        ...base,
+        note: "traffic pricing skipped: this shape still touches a zone",
+      };
     }
 
     const count = Math.min(
@@ -127,7 +170,10 @@ export class HybridProvider implements RoutingProvider {
     );
     const waypoints = sampleWaypoints(base.geometry, count);
     if (waypoints.length === 0) {
-      return { ...base, note: 'traffic pricing skipped: route too short to pin waypoints' };
+      return {
+        ...base,
+        note: "traffic pricing skipped: route too short to pin waypoints",
+      };
     }
 
     try {
@@ -146,11 +192,13 @@ export class HybridProvider implements RoutingProvider {
       );
       const distanceMismatch =
         base.distanceMeters > 0
-          ? Math.abs(priced.distanceMeters - base.distanceMeters) / base.distanceMeters
+          ? Math.abs(priced.distanceMeters - base.distanceMeters) /
+            base.distanceMeters
           : 0;
 
       const grossMismatch =
-        deviation > deviationAllowance || distanceMismatch > MAX_DISTANCE_MISMATCH_RATIO;
+        deviation > deviationAllowance ||
+        distanceMismatch > MAX_DISTANCE_MISMATCH_RATIO;
 
       if (grossMismatch) {
         const note =
