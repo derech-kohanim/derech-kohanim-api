@@ -1,5 +1,5 @@
-import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
-import { Type } from "class-transformer";
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
 import {
   IsBoolean,
   IsIn,
@@ -9,14 +9,14 @@ import {
   IsString,
   MaxLength,
   ValidateNested,
-} from "class-validator";
+} from 'class-validator';
 
-import { LatLngDto } from "../common/dto";
-import type { SupportKind, SupportPlatform } from "@shared";
+import { LatLngDto } from '../common/dto';
+import type { SupportKind, SupportPlatform } from '@shared';
 
 // Mirrors SUPPORT_KINDS in the shared contract (only `import type` survives the build).
-const KINDS: SupportKind[] = ["bug", "route", "data", "suggestion"];
-const PLATFORMS: SupportPlatform[] = ["web", "android"];
+const KINDS: SupportKind[] = ['bug', 'route', 'data', 'suggestion'];
+const PLATFORMS: SupportPlatform[] = ['web', 'android'];
 
 export class SupportReportDto {
   @ApiProperty({ enum: KINDS })
@@ -33,7 +33,7 @@ export class SupportReportDto {
   @IsIn(PLATFORMS)
   platform: SupportPlatform;
 
-  @ApiProperty({ example: "0.1.0" })
+  @ApiProperty({ example: '0.1.0' })
   @IsString()
   @MaxLength(40)
   appVersion: string;

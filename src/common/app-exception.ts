@@ -1,6 +1,6 @@
-import { HttpException, HttpStatus } from "@nestjs/common";
+import { HttpException, HttpStatus } from '@nestjs/common';
 
-import type { ApiError } from "@shared";
+import type { ApiError } from '@shared';
 
 /**
  * Every error the API returns carries a stable `code` the client translates, plus a
@@ -11,11 +11,7 @@ export class AppException extends HttpException {
     super(error, status);
   }
 
-  static badRequest(
-    code: string,
-    message: string,
-    details?: Record<string, unknown>,
-  ) {
+  static badRequest(code: string, message: string, details?: Record<string, unknown>) {
     return new AppException(HttpStatus.BAD_REQUEST, { code, message, details });
   }
 
@@ -45,11 +41,7 @@ export class AppException extends HttpException {
   }
 
   /** Upstream provider failure. Not the client's fault, so never a 4xx. */
-  static badGateway(
-    code: string,
-    message: string,
-    details?: Record<string, unknown>,
-  ) {
+  static badGateway(code: string, message: string, details?: Record<string, unknown>) {
     return new AppException(HttpStatus.BAD_GATEWAY, { code, message, details });
   }
 }

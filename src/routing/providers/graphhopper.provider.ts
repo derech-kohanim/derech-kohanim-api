@@ -1,22 +1,14 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable, Logger } from '@nestjs/common';
 
-import type { DraftManeuver } from "../../common/maneuver";
-import { config } from "../../config";
-import {
-  bakedProfileName,
-  tollBlockingModel,
-  zoneBlockingModel,
-} from "../baked-profiles";
-import {
-  type PathDetail,
-  toSpeedLimits,
-  toWayIds,
-} from "./graphhopper-details";
+import type { DraftManeuver } from '../../common/maneuver';
+import { config } from '../../config';
+import { bakedProfileName, tollBlockingModel, zoneBlockingModel } from '../baked-profiles';
+import { type PathDetail, toSpeedLimits, toWayIds } from './graphhopper-details';
 import type {
   ProviderRouteRequest,
   ProviderRouteResponse,
   RoutingProvider,
-} from "./routing-provider";
+} from './routing-provider';
 
 interface GraphHopperInstruction {
   text?: string;
@@ -56,12 +48,7 @@ interface EngineInfo {
 }
 
 /** Path details requested for driving routes, when the graph was built with them. */
-const DRIVE_DETAILS = [
-  "max_speed",
-  "max_speed_estimated",
-  "urban_density",
-  "osm_way_id",
-];
+const DRIVE_DETAILS = ['max_speed', 'max_speed_estimated', 'urban_density', 'osm_way_id'];
 
 /** How long the engine's profile list is trusted before it is fetched again. */
 const INFO_TTL_MS = 60_000;
@@ -77,7 +64,7 @@ const INFO_RETRY_MS = 10_000;
 export class GraphHopperUnavailableError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = "GraphHopperUnavailableError";
+    this.name = 'GraphHopperUnavailableError';
   }
 }
 
@@ -102,9 +89,8 @@ const UNAVAILABLE_STATUSES = new Set([502, 503, 504]);
  */
 @Injectable()
 export class GraphHopperProvider implements RoutingProvider {
-  readonly name = "graphhopper";
-  readonly attribution =
-    "Routing provided by GraphHopper, OpenStreetMap contributors";
+  readonly name = 'graphhopper';
+  readonly attribution = 'Routing provided by GraphHopper, OpenStreetMap contributors';
   readonly supportsNativeAvoidance = true;
   readonly supportsLiveTraffic = false;
 
@@ -112,27 +98,22 @@ export class GraphHopperProvider implements RoutingProvider {
   private info: (EngineInfo & { expiresAt: number }) | null = null;
   private infoInFlight: Promise<void> | null = null;
 
-  async computeRoute(
-    request: ProviderRouteRequest,
-  ): Promise<ProviderRouteResponse> {
+  async computeRoute(request: ProviderRouteRequest): Promise<ProviderRouteResponse> {
     const routes = await this.computeRoutes({ ...request, alternatives: 0 });
     return routes[0];
   }
 
-  async computeRoutes(
-    request: ProviderRouteRequest,
-  ): Promise<ProviderRouteResponse[]> {
+  async computeRoutes(request: ProviderRouteRequest): Promise<ProviderRouteResponse[]> {
     const url = new URL(config.graphHopperUrl);
     // A self-hosted instance needs no key.
-    if (config.graphHopperApiKey)
-      url.searchParams.set("key", config.graphHopperApiKey);
+    if (config.graphHopperApiKey) url.searchParams.set('key', config.graphHopperApiKey);
 
     const { body: requestBody, note } = await this.buildBody(request);
     let response: Response;
     try {
       response = await fetch(url.toString(), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(requestBody),
       });
     } catch (error) {
@@ -143,9 +124,7 @@ export class GraphHopperProvider implements RoutingProvider {
 
     const bodyText = await response.text();
     if (UNAVAILABLE_STATUSES.has(response.status)) {
-      throw new GraphHopperUnavailableError(
-        `GraphHopper unavailable (${response.status})`,
-      );
+      throw new GraphHopperUnavailableError(`GraphHopper unavailable (${response.status})`);
     }
     let body: GraphHopperResponse;
     try {
@@ -158,16 +137,12 @@ export class GraphHopperProvider implements RoutingProvider {
 
     if (!response.ok) {
       const detail = body.message ?? body.hints?.[0]?.message ?? bodyText;
-      throw new Error(
-        `GraphHopper routing failed (${response.status}): ${detail}`,
-      );
+      throw new Error(`GraphHopper routing failed (${response.status}): ${detail}`);
     }
 
-    const paths = (body.paths ?? []).filter(
-      (path) => (path.points?.coordinates?.length ?? 0) >= 2,
-    );
+    const paths = (body.paths ?? []).filter((path) => (path.points?.coordinates?.length ?? 0) >= 2);
     if (paths.length === 0) {
-      throw new Error("GraphHopper returned no route for this request");
+      throw new Error('GraphHopper returned no route for this request');
     }
 
     return paths.map((path) => {
@@ -178,11 +153,9 @@ export class GraphHopperProvider implements RoutingProvider {
         details.max_speed_estimated as PathDetail<boolean | null>[] | undefined,
         details.urban_density as PathDetail<string | null>[] | undefined,
       );
-      const wayIds = toWayIds(
-        details.osm_way_id as PathDetail<number | null>[] | undefined,
-      );
+      const wayIds = toWayIds(details.osm_way_id as PathDetail<number | null>[] | undefined);
       return {
-        geometry: { type: "LineString" as const, coordinates },
+        geometry: { type: 'LineString' as const, coordinates },
         maneuvers: this.toManeuvers(path, coordinates),
         distanceMeters: Math.round(path.distance ?? 0),
         durationSeconds: Math.round((path.time ?? 0) / 1000),
@@ -212,9 +185,8 @@ export class GraphHopperProvider implements RoutingProvider {
   private async fetchInfo(): Promise<void> {
     try {
       const url = new URL(config.graphHopperUrl);
-      url.pathname = url.pathname.replace(/\/route\/?$/, "/info");
-      if (config.graphHopperApiKey)
-        url.searchParams.set("key", config.graphHopperApiKey);
+      url.pathname = url.pathname.replace(/\/route\/?$/, '/info');
+      if (config.graphHopperApiKey) url.searchParams.set('key', config.graphHopperApiKey);
       const response = await fetch(url.toString(), {
         signal: AbortSignal.timeout(5000),
       });
@@ -222,9 +194,7 @@ export class GraphHopperProvider implements RoutingProvider {
       const info = (await response.json()) as GraphHopperInfo;
       this.info = {
         expiresAt: Date.now() + INFO_TTL_MS,
-        profiles: new Set(
-          (info.profiles ?? []).map((p) => p.name ?? "").filter(Boolean),
-        ),
+        profiles: new Set((info.profiles ?? []).map((p) => p.name ?? '').filter(Boolean)),
         encodedValues: new Set(Object.keys(info.encoded_values ?? {})),
       };
     } catch (error) {
@@ -241,24 +211,16 @@ export class GraphHopperProvider implements RoutingProvider {
   private async buildBody(
     request: ProviderRouteRequest,
   ): Promise<{ body: Record<string, unknown>; note?: string }> {
-    const {
-      origin,
-      destination,
-      mode,
-      via = [],
-      avoidAreas,
-      avoidTolls,
-      language,
-    } = request;
+    const { origin, destination, mode, via = [], avoidAreas, avoidTolls, language } = request;
     const alternatives = request.alternatives ?? 0;
-    const walking = mode === "walk";
+    const walking = mode === 'walk';
     // Only a self-hosted engine can carry our profiles and encoded values.
     const info = config.graphHopperSelfHosted ? await this.engineInfo() : null;
 
     const points = [origin, ...via, destination].map((p) => [p.lng, p.lat]);
 
     const body: Record<string, unknown> = {
-      profile: walking ? "foot" : "car",
+      profile: walking ? 'foot' : 'car',
       points,
       // GeoJSON out - no polyline decoding, no decoder bugs.
       points_encoded: false,
@@ -269,9 +231,7 @@ export class GraphHopperProvider implements RoutingProvider {
 
     if (!walking && info) {
       // Asking for a detail the graph was not built with fails the whole request.
-      const details = DRIVE_DETAILS.filter((key) =>
-        info.encodedValues.has(key),
-      );
+      const details = DRIVE_DETAILS.filter((key) => info.encodedValues.has(key));
       if (details.length > 0) body.details = details;
     }
 
@@ -291,11 +251,10 @@ export class GraphHopperProvider implements RoutingProvider {
       body.profile = baked;
       note = `baked profile ${baked}`;
     } else {
-      if (baked && info)
-        note = `no baked profile ${baked} loaded; zones sent per request`;
+      if (baked && info) note = `no baked profile ${baked} loaded; zones sent per request`;
       const needsCustomModel = avoidAreas.length > 0 || avoidTolls;
       if (needsCustomModel) {
-        body["ch.disable"] = true; // custom models are only available in flexible/hybrid mode
+        body['ch.disable'] = true; // custom models are only available in flexible/hybrid mode
         const zones = zoneBlockingModel(avoidAreas);
         body.custom_model = avoidTolls
           ? {
@@ -308,31 +267,28 @@ export class GraphHopperProvider implements RoutingProvider {
 
     if (walking) {
       // Walking has no prepared graph: always the flexible mode.
-      body["ch.disable"] = true;
-      body["lm.disable"] = true;
+      body['ch.disable'] = true;
+      body['lm.disable'] = true;
     }
 
     // Alternatives need the plain two-point request; via points already pin the shape.
     // GraphHopper 11 computes alternatives with whichever solver the request selects (speed,
     // hybrid or flexible mode), so a custom model does not rule them out.
     if (alternatives > 0 && via.length === 0) {
-      body.algorithm = "alternative_route";
-      body["alternative_route.max_paths"] = Math.min(alternatives + 1, 4);
+      body.algorithm = 'alternative_route';
+      body['alternative_route.max_paths'] = Math.min(alternatives + 1, 4);
     }
 
     if (request.trafficAware) {
       this.logger.debug(
-        "trafficAware requested but GraphHopper has no live traffic - free-flow times.",
+        'trafficAware requested but GraphHopper has no live traffic - free-flow times.',
       );
     }
 
     return { body, note };
   }
 
-  private toManeuvers(
-    path: GraphHopperPath,
-    coordinates: [number, number][],
-  ): DraftManeuver[] {
+  private toManeuvers(path: GraphHopperPath, coordinates: [number, number][]): DraftManeuver[] {
     const maneuvers: DraftManeuver[] = [];
     for (const instruction of path.instructions ?? []) {
       const index = instruction.interval?.[0] ?? 0;
@@ -358,34 +314,34 @@ export class GraphHopperProvider implements RoutingProvider {
 function signToAction(sign?: number): string {
   switch (sign) {
     case -98:
-      return "uturn";
+      return 'uturn';
     case -8:
-      return "uturn";
+      return 'uturn';
     case -7:
-      return "keep_left";
+      return 'keep_left';
     case -3:
-      return "sharp_left";
+      return 'sharp_left';
     case -2:
-      return "turn_left";
+      return 'turn_left';
     case -1:
-      return "slight_left";
+      return 'slight_left';
     case 0:
-      return "continue";
+      return 'continue';
     case 1:
-      return "slight_right";
+      return 'slight_right';
     case 2:
-      return "turn_right";
+      return 'turn_right';
     case 3:
-      return "sharp_right";
+      return 'sharp_right';
     case 4:
-      return "arrive";
+      return 'arrive';
     case 5:
-      return "continue";
+      return 'continue';
     case 6:
-      return "roundabout_enter";
+      return 'roundabout_enter';
     case 7:
-      return "keep_right";
+      return 'keep_right';
     default:
-      return "continue";
+      return 'continue';
   }
 }

@@ -1,4 +1,4 @@
-import type { DraftManeuver } from "../../common/maneuver";
+import type { DraftManeuver } from '../../common/maneuver';
 import type {
   GeoJsonLineString,
   GeoJsonPolygon,
@@ -7,7 +7,7 @@ import type {
   SpeedLimitSegment,
   Stringency,
   TravelMode,
-} from "@shared";
+} from '@shared';
 
 export interface ProviderRouteRequest {
   origin: LatLng;
@@ -77,9 +77,7 @@ export interface RoutingProvider {
    * that cannot produce alternatives may omit this; RoutingService then falls back to a single
    * `computeRoute`. Each element is an independent candidate; the caller verifies every one.
    */
-  computeRoutes?(
-    request: ProviderRouteRequest,
-  ): Promise<ProviderRouteResponse[]>;
+  computeRoutes?(request: ProviderRouteRequest): Promise<ProviderRouteResponse[]>;
 
   /**
    * Two-phase timing, for a provider whose shape and whose travel time come from different

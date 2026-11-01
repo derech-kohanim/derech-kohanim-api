@@ -33,6 +33,7 @@ model User {
   reports          RouteReport[]
   navFeedback      NavFeedback[]
   deletionRequests DeletionRequest[]
+  supportReports   SupportReport[]
 
   @@map("users")
 }
@@ -336,4 +337,29 @@ model VoiceClip {
 
   @@unique([packId, clipKey])
   @@map("voice_clips")
+}
+
+// A report or feedback from a signed-in user, filed as an issue in the private support repository
+// when GitHub is configured. Kept here either way, for the admin console.
+model SupportReport {
+  id           String   @id @default(uuid())
+  userId       String?  @map("user_id")
+  kind         String
+  message      String
+  platform     String
+  appVersion   String   @map("app_version")
+  device       String?
+  routeId      String?  @map("route_id")
+  zoneId       Int?     @map("zone_id")
+  lat          Float?
+  lng          Float?
+  replyByEmail Boolean  @default(false) @map("reply_by_email")
+  issueNumber  Int?     @map("issue_number")
+  issueUrl     String?  @map("issue_url")
+  merged       Boolean  @default(false)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@map("support_reports")
 }
