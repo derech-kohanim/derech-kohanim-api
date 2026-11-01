@@ -21,6 +21,7 @@ import { PrismaService } from '../db/prisma.service';
 import { DangerZonesService } from '../zones/danger-zones.service';
 import { ZonesService } from '../zones/zones.service';
 import { bakedZoneHash } from './baked-profiles';
+import { LanesService } from './lanes.service';
 import { ProviderRegistry } from './providers/provider-registry';
 import { RouteComputeStatsService } from './route-compute-stats.service';
 import type {
@@ -109,6 +110,7 @@ export class RoutingService {
     private readonly dangerZones: DangerZonesService,
     private readonly prisma: PrismaService,
     private readonly stats: RouteComputeStatsService,
+    private readonly lanes: LanesService,
   ) {}
 
   /**
@@ -323,6 +325,8 @@ export class RoutingService {
     // (5) The only pricing round trip of the whole compute. Everything above was decided on
     //     clean geometry and distance, so no discarded candidate ever cost a Google call.
     const priced = await this.priceForPlan(provider, toPrice, request, polygons, attempts);
+    // Lane guidance needs the routes' OSM way ids, so it is added to the final routes only.
+    await this.lanes.annotate(priced);
 
     const built = priced
       .slice(0, chosen.length)

@@ -1,6 +1,6 @@
 /**
- * Unit checks for the pure routing helpers: baked-profile naming, speed-limit segments,
- * bearings, route deviation and the OSM value parsers. No database, no network.
+ * Unit checks for the pure routing helpers: baked-profile naming, speed-limit segments, lane
+ * parsing and the OSM value parsers. No database, no network.
  *
  *   npx tsx scripts/verify-routing-units.ts
  */
@@ -15,6 +15,7 @@ import {
   closedRings,
   zoneBlockingModel,
 } from '../src/routing/baked-profiles';
+import { lanesForAction, parseTurnLanes, turnLanesFor } from '../src/routing/lanes';
 import { toSpeedLimits, toWayIds } from '../src/routing/providers/graphhopper-details';
 import { parseDirection, parseMaxSpeed } from './import-osm-features';
 import type { GeoJsonPolygon } from '@shared';
@@ -86,6 +87,36 @@ check('way ids drop empty stretches', () => {
   assert.deepEqual(toWayIds([[0, 3, 11], [3, 4, null], [4, 9, 12]]), [[0, 3, 11], [4, 9, 12]]);
 });
 
+check('turn lanes parse left to right with none for blanks', () => {
+  assert.deepEqual(parseTurnLanes('left|through;right||right'), [
+    ['left'],
+    ['through', 'right'],
+    ['none'],
+    ['right'],
+  ]);
+});
+check('lanes: a left turn marks only the left lanes', () => {
+  assert.deepEqual(lanesForAction('turn_left', parseTurnLanes('left|left;through|through|right')), [
+    { indications: ['left'], valid: true },
+    { indications: ['left', 'through'], valid: true },
+    { indications: ['through'], valid: false },
+    { indications: ['right'], valid: false },
+  ]);
+});
+check('lanes: nothing when every lane or no lane serves the turn', () => {
+  assert.equal(lanesForAction('turn_right', parseTurnLanes('left|through')), undefined);
+  assert.equal(lanesForAction('continue', parseTurnLanes('through|through')), undefined);
+  assert.equal(lanesForAction('turn_left', parseTurnLanes('left')), undefined);
+  assert.equal(lanesForAction('arrive', parseTurnLanes('left|right')), undefined);
+});
+check('lanes: tag choice follows one-way and drawing direction', () => {
+  const twoWay = { turnLanes: 'x', turnLanesForward: 'f', turnLanesBackward: 'b', oneway: null };
+  assert.equal(turnLanesFor(twoWay, true), 'f');
+  assert.equal(turnLanesFor(twoWay, false), 'b');
+  const oneWay = { turnLanes: 'x', turnLanesForward: null, turnLanesBackward: null, oneway: 'yes' };
+  assert.equal(turnLanesFor(oneWay, true), 'x');
+  assert.equal(turnLanesFor(oneWay, false), null);
+});
 
 check('bearing and angles', () => {
   assert.ok(Math.abs(bearing([35, 32], [35, 32.01])) < 0.5);

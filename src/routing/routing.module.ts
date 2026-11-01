@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 
 import { ZonesModule } from '../zones/zones.module';
+import { LanesService } from './lanes.service';
 import { GoogleProvider } from './providers/google.provider';
 import { GraphHopperProvider } from './providers/graphhopper.provider';
 import { HereProvider } from './providers/here.provider';
@@ -23,6 +24,7 @@ import { RoutingService } from './routing.service';
     MockProvider,
     ProviderRegistry,
     RoutingService,
+    LanesService,
     RouteComputeStatsService,
     RouteComputeTimingInterceptor,
   ],

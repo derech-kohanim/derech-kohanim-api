@@ -73,6 +73,8 @@ async function main(): Promise<void> {
     {} as never,
     // computePlan does not touch compute-stats (only computeAndStorePlan does), so a stub is safe.
     {} as never,
+    // Lane guidance reads the database; the fixture run has no lane data, so it adds nothing.
+    { annotate: async () => undefined } as never,
   );
 
   const only = engineFromArgv();

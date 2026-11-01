@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import type { LatLng, Maneuver, ManeuverZone } from '@shared';
+import type { Lane, LatLng, Maneuver, ManeuverZone } from '@shared';
 
 /**
  * A maneuver before the route-wide fields are known. Providers produce these; the routing
@@ -17,6 +17,7 @@ export interface DraftManeuver {
   roadRef?: string | null;
   /** Roundabout exit to take, 1-based. */
   exitNumber?: number;
+  lanes?: Lane[];
   zone?: ManeuverZone;
 }
 
@@ -241,6 +242,7 @@ export function finaliseManeuvers(
       street: draft.street,
       ...(draft.roadRef ? { roadRef: draft.roadRef } : {}),
       ...(draft.exitNumber ? { exitNumber: draft.exitNumber } : {}),
+      ...(draft.lanes && draft.lanes.length > 0 ? { lanes: draft.lanes } : {}),
       ...(draft.zone ? { zone: draft.zone } : {}),
       voiceKeys: buildVoiceKeys(draft, distanceMeters),
     });
