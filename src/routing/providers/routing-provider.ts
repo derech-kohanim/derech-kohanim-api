@@ -1,4 +1,4 @@
-import type { DraftManeuver } from '../../common/maneuver';
+import type { DraftManeuver } from "../../common/maneuver";
 import type {
   GeoJsonLineString,
   GeoJsonPolygon,
@@ -7,7 +7,7 @@ import type {
   SpeedLimitSegment,
   Stringency,
   TravelMode,
-} from '@shared';
+} from "@shared";
 
 export interface ProviderRouteRequest {
   origin: LatLng;
@@ -43,6 +43,11 @@ export interface ProviderRouteResponse {
   durationSeconds: number;
   /** Optional provider-side remark, surfaced in the debug attempt log. */
   note?: string;
+  /**
+   * Attribution for this route when it differs from the provider's own, e.g. a hybrid route
+   * answered by its backup engine.
+   */
+  attribution?: string;
   /** Speed limits along the geometry, when the engine knows them. */
   speedLimits?: SpeedLimitSegment[];
   /**
@@ -72,7 +77,9 @@ export interface RoutingProvider {
    * that cannot produce alternatives may omit this; RoutingService then falls back to a single
    * `computeRoute`. Each element is an independent candidate; the caller verifies every one.
    */
-  computeRoutes?(request: ProviderRouteRequest): Promise<ProviderRouteResponse[]>;
+  computeRoutes?(
+    request: ProviderRouteRequest,
+  ): Promise<ProviderRouteResponse[]>;
 
   /**
    * Two-phase timing, for a provider whose shape and whose travel time come from different

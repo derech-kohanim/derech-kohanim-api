@@ -95,7 +95,10 @@ export class HybridProvider implements RoutingProvider {
   async computeRoute(
     request: ProviderRouteRequest,
   ): Promise<ProviderRouteResponse> {
-    return this.withBackupEngine((engine) => engine.computeRoute(request));
+    const [route] = await this.withBackupEngine((engine) =>
+      engine.computeRoute(request).then((r) => [r]),
+    );
+    return route;
   }
 
   /** Every alternative shape comes from the polygon-blocking engine, unpriced. */
@@ -117,9 +120,9 @@ export class HybridProvider implements RoutingProvider {
    * the backup changes speed and attribution, never safety. A real routing failure ("no route")
    * is not retried.
    */
-  private async withBackupEngine<T>(
-    call: (engine: RoutingProvider) => Promise<T>,
-  ): Promise<T> {
+  private async withBackupEngine(
+    call: (engine: RoutingProvider) => Promise<ProviderRouteResponse[]>,
+  ): Promise<ProviderRouteResponse[]> {
     const engine = this.shape;
     try {
       return await call(engine);
@@ -132,7 +135,9 @@ export class HybridProvider implements RoutingProvider {
         throw error;
       }
       this.logger.warn(`${error.message}; answering this route from HERE`);
-      return call(this.here);
+      const routes = await call(this.here);
+      const attribution = `${this.here.attribution} - travel times by Google`;
+      return routes.map((route) => ({ ...route, attribution }));
     }
   }
 

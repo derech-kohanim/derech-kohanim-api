@@ -186,7 +186,7 @@ async function hybridBackupChecks(): Promise<void> {
       if (ghError) throw ghError;
       return [fakeRoute('graphhopper')];
     };
-    const here = { computeRoute: async () => fakeRoute('here') };
+    const here = { attribution: 'HERE', computeRoute: async () => fakeRoute('here') };
     return new HybridProvider(graphhopper, here as never, {} as never);
   };
   try {
@@ -194,7 +194,7 @@ async function hybridBackupChecks(): Promise<void> {
     config.hereApiKey = 'key';
     await checkAsync('hybrid: an unreachable GraphHopper is answered by HERE', async () => {
       const routes = await make(new GraphHopperUnavailableError('down')).computeRoutes(request);
-      assert.deepEqual(routes, [{ engine: 'here' }]);
+      assert.deepEqual(routes, [{ engine: 'here', attribution: 'HERE - travel times by Google' }]);
     });
     await checkAsync('hybrid: a real routing failure is not retried on HERE', async () => {
       await assert.rejects(make(new Error('no route')).computeRoutes(request), /no route/);

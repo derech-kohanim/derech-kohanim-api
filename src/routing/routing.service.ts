@@ -733,7 +733,7 @@ export class RoutingService {
       durationSeconds: route.durationSeconds,
       verifiedClean,
       reason,
-      attribution: provider.attribution,
+      attribution: route.attribution ?? provider.attribution,
       engine: provider.name as RouteResult['engine'],
       ...(avoidsTolls ? { avoidsTolls: true } : {}),
       ...(options.label ? { label: options.label } : {}),
