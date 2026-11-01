@@ -34,6 +34,8 @@ npm run dev               # Nest במצב watch
 | `npm run seed` | מסמך תנאים, משתמש הדגמה וקטעי קול (לא אזורים). מריץ מ-`dist` |
 | `npm run import:areas -- <path>` | ייבוא נתוני האזורים והאזורים המסוכנים. מריץ מ-`dist` |
 | `npm run seed:dev` / `npm run import:areas:dev` | אותו דבר דרך `tsx`, לפיתוח ללא בנייה |
+| `npm run import:osm-features -- <alerts\|lanes> <file\|->` | Replaces the speed cameras / rail crossings or the turn-lane ways from an osmium export (the maintainer runs it) |
+| `npm run export:graph-models` | Prints the baked-zone GraphHopper profiles as JSON (the maintainer's graph build reads it) |
 | `npm run verify` (זהה ל-`npm test`) | מארז בדיקות ההימנעות ההלכתי, לכל מנוע זמין |
 | `npm run prisma:generate` | ייצור מחדש של Prisma Client |
 
@@ -296,6 +298,59 @@ RoutePlan {
 לא מקוון ודטרמיניסטי, ולכן הוא החלק המובטח של הריצה, מנועים אמיתיים נבדקים כשיש מפתח
 ושגיאת רשת מדווחת כ-SKIP ולא כ-FAIL.
 
+#### Baked-zone profiles on the self-hosted GraphHopper
+
+Sending every zone polygon with each request forced GraphHopper out of its prepared modes and
+made it test hundreds of polygons on every edge: a Tel Aviv - Jerusalem plan took about 33
+seconds. The graph is now built with one profile per stringency whose custom model already
+blocks that stringency's zones (cumulative, plus the danger zones), plus a toll-free variant of
+each, all prepared with contraction hierarchies like the plain car profile
+(`src/routing/baked-profiles.ts`).
+
+- The profile name carries a hash of the exact polygon list: `car_<stringency>_<hash>` and
+  `car_<stringency>_notoll_<hash>`. The
+  graph build gets its models from `npm run export:graph-models`, and the routing service
+  computes the same name from the zones it is about to avoid, with the same function. The
+  provider reads the engine's profiles from `GET /info` (cached for a minute) and uses a baked
+  profile only when the name matches, so a graph built from older zones never routes a request.
+- No match (a fresh install, a zone import whose rebuild has not finished, or
+  `avoidDangerZones=false`): the polygons are sent per request as before. Walking always uses
+  the per-request path.
+- The polygons are packed into a few MultiPolygon areas whose parts' bounding boxes do not
+  overlap, because GraphHopper tests each area separately on every edge it weighs.
+- Every returned route is still verified against the polygons by this server, whatever the
+  engine claims.
+
+Measured locally on the Israel extract (Tel Aviv - Jerusalem, 4 alternatives requested): the
+engine answers in about 0.1 s on a baked profile (toll-free included) against about 2.7 s on
+the per-request fallback, and a full `POST /api/routes/compute` with `engine=graphhopper` takes
+about 0.45 s including verification and storage, down from about 34 s in production before.
+Part of that gain came from the server's own geometry: the alternative dedupe, the zone
+verification and the manoeuvre annotation used to scan every vertex against every segment or
+zone (`common/geo.ts` now uses a segment grid and bounding-box prefilters, with identical
+results).
+
+The maintainer service in `derech-kohanim-deploy` rebuilds and swaps the graph when the zones
+or the OSM extract change; see its README.
+
+#### Speed limits, roundabout exits, road numbers and lanes
+
+Routes shaped by the self-hosted GraphHopper carry:
+
+- `RouteResult.speedLimits`: contiguous segments from the `max_speed`, `max_speed_estimated`
+  and `urban_density` path details (`providers/graphhopper-details.ts`). `source` is `sign`
+  when OSM has a maxspeed, `estimated` when GraphHopper's legal-default calculator filled it,
+  and `urban_default` (50 km/h) for a built-up stretch where nothing else is known.
+- `Maneuver.exitNumber` (roundabouts; adds the `exit.N` voice clip) and `Maneuver.roadRef`.
+- `Maneuver.lanes`: the `turn:lanes` of the way leading into the manoeuvre, found through the
+  `osm_way_id` path detail and the `osm_turn_lanes` table, with the lanes that serve the turn
+  marked valid (`routing/lanes.ts`, `routing/lanes.service.ts`). Omitted when the markings
+  cannot say which lanes to use.
+
+Details are requested only when the running graph has the encoded values (read from
+`GET /info`), so an older graph keeps working, just without them. Other engines return none of
+these fields.
+
 ### אירועים ודיווחים על מסלול
 
 | שיטה | נתיב | תיאור |
@@ -311,6 +366,10 @@ RoutePlan {
 - **תנועה בזרע**: מקטע עומס כבד ומקטע בינוני על טווחי אינדקסים בגיאומטריה, אירוע `traffic`
   בנקודת הפקק, ו-`delaySeconds` המחושב מאורך הקטע הכבד. הפיד דטרמיניסטי לכל מסלול, כך
   שאותו מסלול תמיד מחזיר אותו פיד
+- **Speed cameras and rail crossings** (`speed_camera`, `rail_crossing`) within 20 m of the
+  route, from the `road_alerts` table the maintainer fills from the OSM extract. A camera
+  tagged with a facing direction more than 60 degrees off the travel direction is left out.
+  `maxSpeedKmh` and `guarded` are set when OSM has them. Works for a route from any engine.
 - **דיווחי משתמשים** שהוגשו למסלול הזה
 
 הפיד תואם במדויק את מימוש ההדגמה בצד הלקוח (`mockEventsForRoute`), כדי שהלקוח יוכל לוותר
