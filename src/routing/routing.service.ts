@@ -569,8 +569,10 @@ export class RoutingService {
     for (const candidate of candidates) {
       const duplicate = kept.some(
         (other) =>
-          maxDeviationMeters(other.geometry, candidate.geometry) < DEDUP_DEVIATION_METERS &&
-          maxDeviationMeters(candidate.geometry, other.geometry) < DEDUP_DEVIATION_METERS,
+          maxDeviationMeters(other.geometry, candidate.geometry, DEDUP_DEVIATION_METERS) <
+            DEDUP_DEVIATION_METERS &&
+          maxDeviationMeters(candidate.geometry, other.geometry, DEDUP_DEVIATION_METERS) <
+            DEDUP_DEVIATION_METERS,
       );
       if (!duplicate) kept.push(candidate);
     }

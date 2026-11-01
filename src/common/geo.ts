@@ -42,11 +42,58 @@ export function verifyRouteAgainstZones(
   if (geometry.coordinates.length < 2) {
     return { clean: false, offending: [] };
   }
-  const line = lineString(geometry.coordinates);
-  const offending = zones.filter((zone) =>
-    booleanIntersects(line, turfPolygon(zone.geometry.coordinates)),
-  );
+  // Exact, only faster: a line meets a polygon only through a segment whose bounding box meets
+  // the polygon's, so each zone is tested against just those segments (as runs of consecutive
+  // segments). Testing the whole cross-country line against every corridor zone cost most of a
+  // second per candidate.
+  const coords = geometry.coordinates;
+  const segmentBoxes = coords.slice(0, -1).map((a, i) => segmentBox(a, coords[i + 1]));
+  const offending = zones.filter((zone) => {
+    const box = polygonBox(zone.geometry);
+    let run: [number, number][] | null = null;
+    const runs: [number, number][][] = [];
+    for (let i = 0; i < segmentBoxes.length; i++) {
+      if (boxesOverlap(segmentBoxes[i], box)) {
+        if (!run) {
+          run = [coords[i]];
+          runs.push(run);
+        }
+        run.push(coords[i + 1]);
+      } else {
+        run = null;
+      }
+    }
+    if (runs.length === 0) return false;
+    const polygon = turfPolygon(zone.geometry.coordinates);
+    return runs.some((part) => booleanIntersects(lineString(part), polygon));
+  });
   return { clean: offending.length === 0, offending };
+}
+
+type Box = [number, number, number, number];
+
+function segmentBox(a: [number, number], b: [number, number]): Box {
+  return [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[0], b[0]), Math.max(a[1], b[1])];
+}
+
+function polygonBox(polygon: GeoJsonPolygon): Box {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const ring of polygon.coordinates) {
+    for (const [x, y] of ring) {
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+  }
+  return [minX, minY, maxX, maxY];
+}
+
+function boxesOverlap(a: Box, b: Box): boolean {
+  return a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3];
 }
 
 /**
@@ -482,10 +529,22 @@ export function annotateManeuversWithZones(
   const coordinates = geometry.coordinates;
   if (zones.length === 0 || coordinates.length < 2) return maneuvers;
 
+  // The first zone containing the point, in the given order. The bounding-box test skips the
+  // point-in-polygon work for every zone the point is nowhere near; it never changes the answer.
+  const prepared = zones.map((zone) => ({
+    zone,
+    box: polygonBox(zone.geometry),
+    polygon: turfPolygon(zone.geometry.coordinates),
+  }));
   const zoneAt = (lng: number, lat: number): AvoidZone | undefined =>
-    zones.find((zone) =>
-      booleanPointInPolygon(turfPoint([lng, lat]), turfPolygon(zone.geometry.coordinates)),
-    );
+    prepared.find(
+      ({ box, polygon }) =>
+        lng >= box[0] &&
+        lng <= box[2] &&
+        lat >= box[1] &&
+        lat <= box[3] &&
+        booleanPointInPolygon(turfPoint([lng, lat]), polygon),
+    )?.zone;
 
   // Sample index s maps to vertex index floor(s / 2): even = vertex, odd = following midpoint.
   const samples: {
@@ -737,23 +796,103 @@ export function nearestZone(
  * Largest distance, in meters, from any vertex of `candidate` to the `reference` line.
  *
  * Used to decide whether a second provider actually followed a route planned by the first,
- * or quietly took its own way. Sampling the candidate's vertices is enough: a deviation big
- * enough to matter always shows up at a vertex.
+ * or quietly took its own way, and whether two alternatives are the same corridor. Sampling
+ * the candidate's vertices is enough: a deviation big enough to matter always shows up at a
+ * vertex.
+ *
+ * With `limit`, the answer is only needed as "more than limit or not": the scan stops at the
+ * first vertex farther than that and returns its distance.
+ *
+ * Cross-country routes have thousands of vertices each, so testing every vertex against every
+ * segment (as the first version did, through turf) cost seconds per pair and dominated the
+ * whole route compute. The reference segments are bucketed into a grid in a local metric
+ * projection, and each vertex searches outward ring by ring only until no nearer segment can
+ * exist. At this scale the projection's error is far below a meter per kilometer.
  */
 export function maxDeviationMeters(
   reference: GeoJsonLineString,
   candidate: GeoJsonLineString,
+  limit = Number.POSITIVE_INFINITY,
 ): number {
-  if (reference.coordinates.length < 2 || candidate.coordinates.length === 0) {
+  const ref = reference.coordinates;
+  if (ref.length < 2 || candidate.coordinates.length === 0) {
     return Number.POSITIVE_INFINITY;
   }
 
-  const line = lineString(reference.coordinates);
+  const lat0 = (ref[0][1] * Math.PI) / 180;
+  const kx = 111_320 * Math.cos(lat0);
+  const ky = 110_574;
+  const lng0 = ref[0][0];
+  const latDeg0 = ref[0][1];
+  const px = (lng: number) => (lng - lng0) * kx;
+  const py = (lat: number) => (lat - latDeg0) * ky;
+
+  const xs = ref.map((c) => px(c[0]));
+  const ys = ref.map((c) => py(c[1]));
+
+  const CELL = 250;
+  const grid = new Map<string, number[]>();
+  for (let i = 0; i < ref.length - 1; i++) {
+    const minCx = Math.floor(Math.min(xs[i], xs[i + 1]) / CELL);
+    const maxCx = Math.floor(Math.max(xs[i], xs[i + 1]) / CELL);
+    const minCy = Math.floor(Math.min(ys[i], ys[i + 1]) / CELL);
+    const maxCy = Math.floor(Math.max(ys[i], ys[i + 1]) / CELL);
+    // A long straight segment spans many cells; it is listed in each so a search stays local.
+    for (let cx = minCx; cx <= maxCx; cx++) {
+      for (let cy = minCy; cy <= maxCy; cy++) {
+        const key = `${cx},${cy}`;
+        let bucket = grid.get(key);
+        if (!bucket) grid.set(key, (bucket = []));
+        bucket.push(i);
+      }
+    }
+  }
+
+  const segmentDistance = (x: number, y: number, i: number): number => {
+    const ax = xs[i];
+    const ay = ys[i];
+    const dx = xs[i + 1] - ax;
+    const dy = ys[i + 1] - ay;
+    const len2 = dx * dx + dy * dy;
+    const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / len2));
+    return Math.hypot(x - (ax + t * dx), y - (ay + t * dy));
+  };
+
+  const bruteForce = (x: number, y: number): number => {
+    let best = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < ref.length - 1; i++) best = Math.min(best, segmentDistance(x, y, i));
+    return best;
+  };
+
+  const MAX_RINGS = 40;
+  const nearest = (x: number, y: number): number => {
+    const cx = Math.floor(x / CELL);
+    const cy = Math.floor(y / CELL);
+    let best = Number.POSITIVE_INFINITY;
+    for (let ring = 0; ring <= MAX_RINGS; ring++) {
+      for (let gx = cx - ring; gx <= cx + ring; gx++) {
+        for (let gy = cy - ring; gy <= cy + ring; gy++) {
+          // Only the ring's border cells; the inside was searched already.
+          if (ring > 0 && Math.abs(gx - cx) !== ring && Math.abs(gy - cy) !== ring) continue;
+          for (const i of grid.get(`${gx},${gy}`) ?? []) {
+            best = Math.min(best, segmentDistance(x, y, i));
+          }
+        }
+      }
+      // Every cell within `ring` is done, so no unseen segment is nearer than this.
+      if (best <= ring * CELL) return best;
+      if (ring * CELL > limit) return best; // already farther than anything that matters
+    }
+    return bruteForce(x, y);
+  };
+
   let worst = 0;
   for (const [lng, lat] of candidate.coordinates) {
-    const metres =
-      pointToLineDistance(turfPoint([lng, lat]), line, { units: 'kilometers' }) * 1000;
-    if (metres > worst) worst = metres;
+    const metres = nearest(px(lng), py(lat));
+    if (metres > worst) {
+      worst = metres;
+      if (worst > limit) return worst;
+    }
   }
   return worst;
 }

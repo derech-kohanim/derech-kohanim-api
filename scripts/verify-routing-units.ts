@@ -1,12 +1,13 @@
 /**
  * Unit checks for the pure routing helpers: baked-profile naming, speed-limit segments,
- * bearings and the OSM value parsers. No database, no network.
+ * bearings, route deviation and the OSM value parsers. No database, no network.
  *
  *   npx tsx scripts/verify-routing-units.ts
  */
 import assert from 'node:assert/strict';
 
 import { angleBetween, bearing } from '../src/common/bearing';
+import { maxDeviationMeters } from '../src/common/geo';
 import { buildVoiceKeys } from '../src/common/maneuver';
 import {
   bakedProfileName,
@@ -114,5 +115,21 @@ check('roundabout exit is spoken after entering', () => {
   assert.deepEqual(keys.slice(-2), ['action.roundabout_enter', 'exit.3']);
 });
 
+check('deviation: grid search matches the exact distance and stops early with a limit', () => {
+  // Two parallel east-west lines about 111 m apart (0.001 degrees of latitude), 10 km long.
+  const a = { type: 'LineString' as const, coordinates: [] as [number, number][] };
+  const b = { type: 'LineString' as const, coordinates: [] as [number, number][] };
+  for (let i = 0; i <= 100; i++) {
+    a.coordinates.push([34.8 + i * 0.001, 32]);
+    b.coordinates.push([34.8 + i * 0.001, 32.001]);
+  }
+  const exact = maxDeviationMeters(a, b);
+  assert.ok(Math.abs(exact - 110.6) < 1, `got ${exact}`);
+  assert.equal(maxDeviationMeters(a, a), 0);
+  assert.ok(maxDeviationMeters(a, b, 80) > 80);
+  // A detour 2 km off the reference is found even though it is many grid cells away.
+  const detour = { type: 'LineString' as const, coordinates: [[34.85, 32.018]] as [number, number][] };
+  assert.ok(Math.abs(maxDeviationMeters(a, detour) - 1990) < 15, `got ${maxDeviationMeters(a, detour)}`);
+});
 
 process.stdout.write(`\n${passed} passed - PASS\n`);
