@@ -25,13 +25,17 @@ export function bakedZoneHash(polygons: GeoJsonPolygon[]): string {
   return createHash('sha1').update(JSON.stringify(canonical)).digest('hex').slice(0, 12);
 }
 
-/** GraphHopper profile names allow lowercase letters, digits and underscores. */
-export function bakedProfileName(stringency: Stringency, hash: string): string {
-  return `car_${stringency}_${hash}`;
+/**
+ * GraphHopper profile names allow lowercase letters, digits and underscores. Toll avoidance gets
+ * its own baked profile rather than a per-request rule: a per-request rule rules out speed mode,
+ * and the zones in the profile then make every other mode slow.
+ */
+export function bakedProfileName(stringency: Stringency, hash: string, avoidTolls = false): string {
+  return `car_${stringency}${avoidTolls ? '_notoll' : ''}_${hash}`;
 }
 
-export function bakedModelFileName(stringency: Stringency): string {
-  return `dk_zones_${stringency}.json`;
+export function bakedModelFileName(stringency: Stringency, avoidTolls = false): string {
+  return `dk_zones_${stringency}${avoidTolls ? '_notoll' : ''}.json`;
 }
 
 /**

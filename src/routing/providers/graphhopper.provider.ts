@@ -63,11 +63,11 @@ const INFO_RETRY_MS = 10_000;
  * Two ways to avoid zones, chosen per request:
  *
  * - Baked: the graph was built with a profile whose custom model already blocks the request's
- *   exact zone set (see routing/baked-profiles.ts). The request names that profile and nothing
- *   else, so it runs in speed mode (contraction hierarchies) like a plain route. Toll avoidance
- *   is layered on as a small per-request model, which runs in hybrid mode (landmarks).
- * - Per request: the zone polygons travel in the request as a `custom_model`, each polygon an
- *   area with priority 0, which needs `ch.disable`. Used whenever no matching baked profile is
+ *   exact zone set (see routing/baked-profiles.ts), with a toll-free variant of each. The
+ *   request names that profile and nothing else, so it runs in speed mode (contraction
+ *   hierarchies) like a plain route.
+ * - Per request: the zone polygons travel in the request as a `custom_model` (packed areas with
+ *   priority 0), which needs `ch.disable` and runs in hybrid mode on the plain car profile. Used whenever no matching baked profile is
  *   loaded (a graph built from older zones, danger zones switched off, or a fresh install).
  *
  * What it does not have is live traffic, which is surfaced through `supportsLiveTraffic`.
@@ -213,16 +213,13 @@ export class GraphHopperProvider implements RoutingProvider {
     let note: string | undefined;
     const baked =
       !walking && avoidAreas.length > 0 && request.bakedZones
-        ? bakedProfileName(request.bakedZones.stringency, request.bakedZones.hash)
+        ? bakedProfileName(request.bakedZones.stringency, request.bakedZones.hash, Boolean(avoidTolls))
         : null;
 
     if (baked && info?.profiles.has(baked)) {
-      // The zones are already in the graph: no polygons, and speed mode unless tolls are avoided.
+      // The zones (and, for the toll-free variant, the toll rule) are already in the graph: no
+      // custom model at all, so the request runs in speed mode.
       body.profile = baked;
-      if (avoidTolls) {
-        body['ch.disable'] = true; // a per-request model runs in hybrid mode (landmarks)
-        body.custom_model = tollBlockingModel();
-      }
       note = `baked profile ${baked}`;
     } else {
       if (baked && info) note = `no baked profile ${baked} loaded; zones sent per request`;

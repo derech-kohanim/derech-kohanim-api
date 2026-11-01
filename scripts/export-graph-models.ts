@@ -8,6 +8,7 @@ import {
   bakedModelFileName,
   bakedProfileName,
   bakedZoneHash,
+  tollBlockingModel,
   zoneBlockingModel,
 } from '../src/routing/baked-profiles';
 import { DangerZonesService } from '../src/zones/danger-zones.service';
@@ -36,15 +37,21 @@ async function main(): Promise<void> {
     const halachic = (await zones.getZones(stringency)).map((zone) => zone.geometry);
     const polygons = [...halachic, ...dangerPolygons];
     const hash = bakedZoneHash(polygons);
-    profiles.push({
-      stringency,
-      name: bakedProfileName(stringency, hash),
-      hash,
-      modelFile: bakedModelFileName(stringency),
-      zoneCount: halachic.length,
-      dangerCount: dangerPolygons.length,
-      customModel: zoneBlockingModel(polygons),
-    });
+    const zonesModel = zoneBlockingModel(polygons);
+    for (const avoidTolls of [false, true]) {
+      profiles.push({
+        stringency,
+        avoidTolls,
+        name: bakedProfileName(stringency, hash, avoidTolls),
+        hash,
+        modelFile: bakedModelFileName(stringency, avoidTolls),
+        zoneCount: halachic.length,
+        dangerCount: dangerPolygons.length,
+        customModel: avoidTolls
+          ? { ...zonesModel, priority: [...zonesModel.priority, ...tollBlockingModel().priority] }
+          : zonesModel,
+      });
+    }
   }
 
   await pool.end();

@@ -44,6 +44,10 @@ check('baked hash depends on order and content', () => {
 });
 check('baked profile name is a valid GraphHopper profile name', () => {
   assert.match(bakedProfileName('taharat', bakedZoneHash([square])), /^car_taharat_[0-9a-f]{12}$/);
+  assert.match(
+    bakedProfileName('basic', bakedZoneHash([square]), true),
+    /^car_basic_notoll_[0-9a-f]{12}$/,
+  );
 });
 check('zone model packs disjoint polygons together and overlapping ones apart', () => {
   const far: GeoJsonPolygon = { type: 'Polygon', coordinates: [[[34, 31], [34.1, 31], [34, 31.1]]] };
@@ -109,5 +113,6 @@ check('roundabout exit is spoken after entering', () => {
   );
   assert.deepEqual(keys.slice(-2), ['action.roundabout_enter', 'exit.3']);
 });
+
 
 process.stdout.write(`\n${passed} passed - PASS\n`);
