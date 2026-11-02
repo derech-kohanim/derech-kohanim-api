@@ -1,0 +1,109 @@
+Derech Kohanim Personal Use License
+Version 1.0, November 2026
+
+Copyright (c) 2026 abaye (abaye.co). All rights reserved.
+Contact: cs@abaye.co
+
+English version below. In case of any discrepancy between the versions, the
+Hebrew version prevails.
+
+===============================================================================
+רישיון שימוש אישי - דרך כהנים
+===============================================================================
+
+1. הגדרות
+   "התוכנה" - קוד המקור, קבצי ההפעלה, העיצוב, המסמכים וכל חומר אחר במאגר
+   הזה, למעט הנתונים והרכיבים שמוחרגים בסעיפים 5 ו-6.
+   "בעל הזכויות" - abaye (abaye.co).
+
+2. שימוש אישי - מותר בחינם וללא הגבלה
+   כל אדם רשאי, בחינם וללא הגבלת זמן, להוריד, להתקין, להפעיל, ללמוד, לבדוק
+   ולשנות את התוכנה, לשימושו האישי והפרטי בלבד.
+
+3. שימוש שדורש אישור מראש ובכתב
+   השימושים הבאים אסורים בלי אישור מראש ובכתב מבעל הזכויות, בין אם בתשלום
+   ובין אם בחינם:
+   א. כל שימוש מסחרי, כולל שימוש בתוך עסק או ארגון, או כחלק ממוצר או שירות.
+   ב. שימוש ציבורי, כולל הפעלת התוכנה או חלק ממנה כשירות שזמין לאחרים.
+   ג. הפצה, פרסום או מכירה של התוכנה, של חלק ממנה או של גרסה ששונתה, כולל
+      פרסום פורק (fork) כפרויקט עצמאי.
+   ד. שילוב רכיבים, קוד או עיצוב מהתוכנה בפרויקט אחר, חינמי או בתשלום.
+   בקשות לאישור: cs@abaye.co
+
+4. תרומות לפרויקט
+   יצירת פורק בגיטהאב לצורך הצעת שינויים לפרויקט הזה (pull request) מותרת.
+   מי ששולח תרומה (קוד, תיקון, תוכן או רעיון) מעניק לבעל הזכויות רישיון
+   קבוע, כלל-עולמי, ללא תמלוגים ובלתי ניתן לביטול, להשתמש בה, לשנות אותה
+   ולהפיץ אותה בכל דרך, ומצהיר שהוא רשאי להעניק רישיון זה.
+
+5. נתוני האזורים אינם כלולים ברישיון
+   הרישיון הזה אינו חל על נתוני האזורים (פוליגונים, שמות והסברים). מקור
+   הנתונים בפרסומים של התאחדות טהרת הכהנים, וכל הזכויות בהם שמורות לה. כל
+   שימוש בנתונים מחייב את אישורה.
+
+6. רכיבי צד שלישי
+   ספריות, גופנים ורכיבים אחרים של צד שלישי כפופים לרישיונות שלהם, ואינם
+   כפופים לרישיון הזה.
+
+7. היעדר אחריות
+   התוכנה מסופקת "כפי שהיא" (AS IS), ללא אחריות מכל סוג. בעל הזכויות לא
+   יישא באחריות לכל נזק שייגרם משימוש בה. התוכנה היא כלי עזר לתכנון דרך
+   בלבד: היא אינה מבטיחה הימנעות מכל אזור, ואינה פסק הלכה. האחריות ההלכתית
+   הסופית היא של המשתמש, ובכל שאלה יש לפנות לרב.
+
+8. סיום
+   הפרה של תנאי הרישיון מבטלת את ההרשאות שניתנו בו באופן מיידי.
+
+===============================================================================
+Derech Kohanim Personal Use License (English)
+===============================================================================
+
+1. Definitions
+   "Software" means the source code, binaries, design, documentation and any
+   other material in this repository, excluding the data and components carved
+   out in sections 5 and 6.
+   "Owner" means abaye (abaye.co).
+
+2. Personal use - free and unrestricted
+   Anyone may, free of charge and without time limit, download, install, run,
+   study, test and modify the Software for their own personal, private use.
+
+3. Uses that require prior written permission
+   The following uses are not permitted without the Owner's prior written
+   permission, whether paid or free of charge:
+   a. Any commercial use, including use within a business or organization, or
+      as part of a product or service.
+   b. Public use, including operating the Software or any part of it as a
+      service available to others.
+   c. Distributing, publishing or selling the Software, any part of it, or a
+      modified version, including publishing a fork as a standalone project.
+   d. Incorporating components, code or design from the Software into another
+      project, free or paid.
+   Permission requests: cs@abaye.co
+
+4. Contributions
+   Forking on GitHub in order to propose changes to this project (a pull
+   request) is permitted. By submitting a contribution (code, fix, content or
+   idea) you grant the Owner a perpetual, worldwide, royalty-free, irrevocable
+   license to use, modify and distribute it in any way, and you confirm that
+   you are entitled to grant this license.
+
+5. Zone data is not covered
+   This license does not apply to the zone data (polygons, names and
+   descriptions). The data originates from publications of Hitachdut Taharat
+   HaKohanim (the Association for the Purity of the Kohanim), which holds all
+   rights to it. Any use of the data requires its permission.
+
+6. Third-party components
+   Third-party libraries, fonts and other components are governed by their own
+   licenses, not by this license.
+
+7. No warranty
+   The Software is provided "AS IS", without warranty of any kind. The Owner
+   shall not be liable for any damage arising from its use. The Software is a
+   route-planning aid only: it does not guarantee avoidance of every zone and
+   is not a halachic ruling. Final halachic responsibility rests with the
+   user, who should consult a rabbi with any question.
+
+8. Termination
+   Any breach of this license immediately terminates the permissions it grants.
